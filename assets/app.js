@@ -203,6 +203,10 @@ function average(values) {
   return validValues.reduce((sum, value) => sum + value, 0) / validValues.length;
 }
 
+function averagePositive(values) {
+  return average(values.filter((value) => Number.isFinite(value) && value > 0));
+}
+
 function clamp(value, min, max) {
   const number = toNumber(value);
   if (number === null) return null;
@@ -269,9 +273,9 @@ function calcPointPrice(marketValue, totalShares) {
   return value / shares;
 }
 
-function setPointPrice(id, marketValue, totalShares) {
+function setPointPrice(id, marketValue, totalShares, fallbackText = '对应股价 -- 元/股') {
   const price = calcPointPrice(marketValue, totalShares);
-  qs(id).textContent = price === null ? '对应股价 -- 元/股' : `对应股价 ${formatNumber(price, 2)} 元/股`;
+  qs(id).textContent = price === null ? fallbackText : `对应股价 ${formatNumber(price, 2)} 元/股`;
   return price;
 }
 
@@ -1093,13 +1097,14 @@ function calculateValuation() {
   const finalBuyPoint = intrinsicValue * Math.pow(0.9, 9);
   const reasonablePE = (1 / (discountRate / 2)) * 0.8;
   const peSellValue = reasonablePE * profitPredictions[2];
-  const totalSurplusValue = (profitPredictions[2] + dAndA - capex) / discountRate;
+  const normalizedFcf = profitPredictions[2] + dAndA - capex;
+  const fcfBasedValuationUsable = normalizedFcf > 0;
+  const totalSurplusValue = fcfBasedValuationUsable ? normalizedFcf / discountRate : null;
   const surplusDenominator = discountRate - perpetualGrowth / 100;
-  const surplusSellValue = surplusDenominator > 0.001
-    ? (profitPredictions[2] + dAndA - capex) / surplusDenominator
+  const surplusSellValue = fcfBasedValuationUsable && surplusDenominator > 0.001
+    ? normalizedFcf / surplusDenominator
     : null;
-  const sellValues = [intrinsicSellValue, peSellValue, surplusSellValue].filter((value) => Number.isFinite(value));
-  const comprehensiveSellValue = sellValues.length ? average(sellValues) : null;
+  const comprehensiveSellValue = averagePositive([intrinsicSellValue, peSellValue, surplusSellValue]);
   const investmentBankValuation = calculateInvestmentBankValuation({
     profitPredictions,
     discountRate,
@@ -1136,10 +1141,13 @@ function calculateValuation() {
   setTextValue('ib-target-pe', investmentBankValuation.targetPE, 2, 'x');
   setTextValue('ib-safety-margin', ratioToPercent(investmentBankValuation.safetyMargin), 2, '%');
   setTextValue('ib-sell-premium', ratioToPercent(investmentBankValuation.sellPremium), 2, '%');
+  const surplusFallbackText = fcfBasedValuationUsable
+    ? '对应股价 -- 元/股'
+    : 'N+2自由现金流为负，暂不纳入综合';
   const sellPrices = {
     intrinsicSellPrice: setPointPrice('intrinsic-sell-price', intrinsicSellValue, totalShares),
     peSellPrice: setPointPrice('pe-sell-price', peSellValue, totalShares),
-    surplusSellPrice: setPointPrice('surplus-sell-price', surplusSellValue, totalShares),
+    surplusSellPrice: setPointPrice('surplus-sell-price', surplusSellValue, totalShares, surplusFallbackText),
     comprehensiveSellPrice: setPointPrice('comprehensive-sell-price', comprehensiveSellValue, totalShares)
   };
   setPointPrice('summary-sell-price', comprehensiveSellValue, totalShares);
@@ -1178,6 +1186,8 @@ function calculateValuation() {
       discountRate,
       debtAdjustment,
       buyingCoefficient,
+      normalizedFcf,
+      fcfBasedValuationUsable,
       intrinsicValue,
       totalSurplusValue,
       reasonablePE,
@@ -1312,6 +1322,8 @@ function showHistoryDetail(recordId) {
     ['贴现率', `${formatNumber(record.outputs.discountRate * 100)}%`],
     ['买入系数', formatNumber(record.outputs.buyingCoefficient, 4)],
     ['合理PE', formatNumber(record.outputs.reasonablePE)],
+    ['N+2自由现金流', `${formatNumber(record.outputs.normalizedFcf)} 亿元`],
+    ['总体盈余口径', record.outputs.fcfBasedValuationUsable ? '已纳入综合卖点' : '自由现金流为负，未纳入综合卖点'],
     ['股息率TTM', `${formatNumber(record.inputs.dividendRate)}%`]
   ])}
       ${detailSection('输入参数', [
