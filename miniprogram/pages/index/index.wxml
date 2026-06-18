@@ -1,0 +1,141 @@
+<view class="page safe-bottom">
+  <view class="header">
+    <view>
+      <view class="title">A股联网估值模型</view>
+      <view class="subtitle">{{asOfTime || '输入公司名称或股票代码后自动取数'}}</view>
+    </view>
+    <button class="share-icon" open-type="share" aria-label="分享">↗</button>
+  </view>
+
+  <view class="search-card">
+    <view class="label">公司名称或股票代码</view>
+    <view class="search-row">
+      <input class="search-input" value="{{keyword}}" bindinput="onKeywordInput" confirm-type="search" bindconfirm="runValuation" placeholder="600519 / 贵州茅台 / 688981" />
+      <button class="primary-btn" loading="{{loading}}" disabled="{{loading}}" bindtap="runValuation">联网取数</button>
+    </view>
+    <view class="quick-row">
+      <button class="chip" data-stock="600519" bindtap="useQuickStock">贵州茅台</button>
+      <button class="chip" data-stock="300750" bindtap="useQuickStock">宁德时代</button>
+      <button class="chip" data-stock="688981" bindtap="useQuickStock">中芯国际</button>
+      <button class="chip" data-stock="001314" bindtap="useQuickStock">亿道信息</button>
+    </view>
+    <view class="status {{statusType}}">{{statusText}}</view>
+  </view>
+
+  <block wx:if="{{result}}">
+    <view class="summary-grid">
+      <view class="metric-card accent">
+        <view class="metric-label">综合卖点市值</view>
+        <view class="metric-value">{{result.summary.comprehensiveSellValue}}</view>
+        <view class="metric-unit">亿元</view>
+        <view class="price-line">{{result.summary.comprehensiveSellPrice}}</view>
+        <view class="market-line {{result.summary.marketStatusClass}}">{{result.summary.marketStatus}}</view>
+      </view>
+      <view class="metric-card">
+        <view class="metric-label">总市值</view>
+        <view class="metric-value">{{result.summary.totalMarketCap}}</view>
+        <view class="metric-unit">亿元</view>
+      </view>
+      <view class="metric-card">
+        <view class="metric-label">内在价值</view>
+        <view class="metric-value">{{result.summary.intrinsicValue}}</view>
+        <view class="metric-unit">亿元</view>
+      </view>
+    </view>
+
+    <view class="card">
+      <view class="card-head">
+        <view class="card-title">基础参数</view>
+        <button class="share-btn" open-type="share">分享给朋友</button>
+      </view>
+      <view class="info-grid">
+        <view><text>公司</text><strong>{{result.stockName}} {{result.stockCode}}</strong></view>
+        <view><text>股价</text><strong>{{result.inputs.stockPrice}} 元</strong></view>
+        <view><text>股息率TTM</text><strong>{{result.inputs.dividendRate}}%</strong></view>
+        <view><text>总股本</text><strong>{{result.inputs.totalShares}} 亿股</strong></view>
+        <view><text>预期增速</text><strong>{{result.inputs.expectedGrowth}}%</strong></view>
+        <view><text>N归母净利润</text><strong>{{result.inputs.netProfit}} 亿元</strong></view>
+      </view>
+    </view>
+
+    <view class="card">
+      <view class="card-head">
+        <view class="card-title">市场行业环境</view>
+        <view class="badge">{{result.environment.label}}</view>
+      </view>
+      <view class="info-grid">
+        <view><text>估值环境系数</text><strong>{{result.environment.multiplier}}</strong></view>
+        <view><text>行业景气</text><strong>{{result.environment.industryScore}}</strong></view>
+        <view><text>市场趋势</text><strong>{{result.environment.marketScore}}</strong></view>
+        <view><text>需求供需</text><strong>{{result.environment.demandScore}}</strong></view>
+      </view>
+      <view class="insight">{{result.environment.summary}}</view>
+    </view>
+
+    <view class="card">
+      <view class="card-head">
+        <view class="card-title">近三年归母净利润预测</view>
+        <view class="badge">{{result.forecast.label}}</view>
+      </view>
+      <view class="forecast-bars">
+        <view class="bar-item" wx:for="{{result.forecast.items}}" wx:key="label">
+          <view class="bar-wrap"><view class="bar" style="height: {{item.height}}%;"></view></view>
+          <view class="bar-value">{{item.value}}</view>
+          <view class="bar-label">{{item.label}}</view>
+        </view>
+      </view>
+      <view class="insight">{{result.forecast.detail}}</view>
+    </view>
+
+    <view class="card">
+      <view class="card-title standalone">卖点市值分析</view>
+      <view class="info-grid">
+        <view><text>内在价值卖点</text><strong>{{result.sell.intrinsicSellValue}}</strong><small>{{result.sell.intrinsicSellPrice}}</small></view>
+        <view><text>PE卖点</text><strong>{{result.sell.peSellValue}}</strong><small>{{result.sell.peSellPrice}}</small></view>
+        <view><text>总体盈余卖点</text><strong>{{result.sell.surplusSellValue}}</strong><small>{{result.sell.surplusSellPrice}}</small></view>
+        <view><text>综合卖点</text><strong>{{result.summary.comprehensiveSellValue}}</strong><small>{{result.summary.comprehensiveSellPrice}}</small></view>
+      </view>
+    </view>
+
+    <view class="card banker">
+      <view class="card-title standalone">投行估值买卖点</view>
+      <view class="info-grid">
+        <view><text>投行合理市值</text><strong>{{result.ib.fairValue}}</strong><small>{{result.ib.fairPrice}}</small></view>
+        <view><text>投行买点市值</text><strong>{{result.ib.buyValue}}</strong><small>{{result.ib.buyPrice}}</small></view>
+        <view><text>投行卖点市值</text><strong>{{result.ib.sellValue}}</strong><small>{{result.ib.sellPrice}}</small></view>
+        <view><text>投行目标PE</text><strong>{{result.ib.targetPE}}</strong></view>
+      </view>
+    </view>
+
+    <view class="card adaptive">
+      <view class="card-head">
+        <view class="card-title">行业适配估值方法</view>
+        <view class="badge">{{result.adaptive.badge}}</view>
+      </view>
+      <view class="insight">{{result.adaptive.summary}}</view>
+      <view class="method-card" wx:for="{{result.adaptive.methods}}" wx:for-item="method" wx:key="name">
+        <view class="method-title">{{method.name}}</view>
+        <view class="method-reason">{{method.reason}}；{{method.assumption}}</view>
+        <view class="method-row head">
+          <text>年份</text><text>估值</text><text>股价</text><text>假设</text>
+        </view>
+        <view class="method-row" wx:for="{{method.rows}}" wx:for-item="row" wx:key="label">
+          <text>{{row.label}}</text><text>{{row.marketValue}}</text><text>{{row.price}}</text><text>{{row.assumption}}</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="card">
+      <view class="card-title standalone">加仓点分析</view>
+      <view class="buy-grid">
+        <view wx:for="{{result.buyPoints}}" wx:key="label">
+          <text>{{item.label}}</text>
+          <strong>{{item.value}}</strong>
+          <small>{{item.price}}</small>
+        </view>
+      </view>
+    </view>
+
+    <view class="disclaimer">数据来自公开行情与财务接口，结果仅供研究参考，不构成投资建议。</view>
+  </block>
+</view>

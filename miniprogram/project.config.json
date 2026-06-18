@@ -1,0 +1,17 @@
+{
+  "description": "A股联网估值模型微信小程序",
+  "setting": {
+    "urlCheck": true,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true,
+    "compileHotReLoad": true
+  },
+  "compileType": "miniprogram",
+  "libVersion": "3.7.10",
+  "appid": "touristappid",
+  "projectname": "a-share-valuation-miniprogram",
+  "miniprogramRoot": "./",
+  "condition": {}
+}
