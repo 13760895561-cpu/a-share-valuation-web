@@ -203,6 +203,19 @@ function average(values) {
   return validValues.reduce((sum, value) => sum + value, 0) / validValues.length;
 }
 
+function clamp(value, min, max) {
+  const number = toNumber(value);
+  if (number === null) return null;
+  return Math.min(Math.max(number, min), max);
+}
+
+function weightedAverage(items) {
+  const validItems = items.filter((item) => Number.isFinite(item.value) && item.value > 0 && Number.isFinite(item.weight) && item.weight > 0);
+  const totalWeight = validItems.reduce((total, item) => total + item.weight, 0);
+  if (!totalWeight) return null;
+  return validItems.reduce((total, item) => total + item.value * item.weight, 0) / totalWeight;
+}
+
 function sum(values) {
   return values.reduce((total, value) => total + value, 0);
 }
@@ -242,6 +255,11 @@ function setInputValue(id, value, digits = 2) {
 function setTextValue(id, value, digits = 2, suffix = '') {
   const number = toNumber(value);
   qs(id).textContent = number === null ? '--' : `${formatNumber(number, digits)}${suffix}`;
+}
+
+function ratioToPercent(value) {
+  const number = toNumber(value);
+  return number === null ? null : number * 100;
 }
 
 function calcPointPrice(marketValue, totalShares) {
@@ -950,6 +968,90 @@ function getInputNumber(id) {
   return toNumber(raw);
 }
 
+function calculateInvestmentBankValuation({
+  profitPredictions,
+  discountRate,
+  perpetualGrowth,
+  expectedGrowth,
+  currentGrossMargin,
+  previousGrossMargin,
+  debtRatio,
+  dividendRate,
+  dAndA,
+  capex,
+  reasonablePE,
+  totalMarketCap
+}) {
+  const forwardNetProfit = profitPredictions[2];
+  const debtRatioValue = debtRatio / 100;
+  const dividendYield = dividendRate / 100;
+  const growthRate = expectedGrowth / 100;
+  const marginLevel = currentGrossMargin / 100;
+  const marginTrend = (currentGrossMargin - previousGrossMargin) / 100;
+  const rawTerminalGrowth = Math.max(perpetualGrowth / 100, 0.005);
+  const terminalGrowth = Math.min(rawTerminalGrowth, Math.max(0.005, discountRate - 0.015));
+  const forecastFcf = profitPredictions.slice(0, 5).map((profit) => profit + dAndA - capex);
+  const pvFcf = forecastFcf.reduce((total, fcf, index) => total + fcf / Math.pow(1 + discountRate, index + 1), 0);
+  const terminalFcf = forecastFcf[4] * (1 + terminalGrowth);
+  const dcfValue = terminalFcf > 0 && discountRate > terminalGrowth
+    ? pvFcf + (terminalFcf / (discountRate - terminalGrowth)) / Math.pow(1 + discountRate, 5)
+    : null;
+  const qualityAdjustment = clamp(
+    1
+      + marginTrend * 0.6
+      + (marginLevel - 0.3) * 0.2
+      - Math.max(debtRatioValue - 0.45, 0) * 0.35
+      + dividendYield * 0.35,
+    0.75,
+    1.3
+  ) ?? 1;
+  const growthMultiple = 12 + (clamp(expectedGrowth, -20, 60) ?? 0) * 0.45;
+  const targetPE = clamp((reasonablePE * 0.45 + growthMultiple * 0.55) * qualityAdjustment, 8, 45);
+  const forwardPeValue = targetPE * forwardNetProfit;
+  const forwardFcf = forwardNetProfit + dAndA - capex;
+  const requiredFcfYield = clamp(discountRate - terminalGrowth + 0.015, 0.045, 0.12);
+  const fcfYieldValue = forwardFcf > 0 && requiredFcfYield
+    ? forwardFcf / requiredFcfYield
+    : null;
+  const fairValue = weightedAverage([
+    { value: dcfValue, weight: 0.45 },
+    { value: forwardPeValue, weight: 0.35 },
+    { value: fcfYieldValue, weight: 0.2 }
+  ]);
+  const debtPenalty = Math.max(debtRatioValue - 0.45, 0);
+  const growthSupport = clamp(growthRate, 0, 0.35) ?? 0;
+  const marginSupport = Math.max(marginTrend, 0);
+  const safetyMargin = clamp(
+    0.22 + debtPenalty * 0.35 - growthSupport * 0.25 - marginSupport * 0.2 - dividendYield * 0.3,
+    0.15,
+    0.35
+  );
+  const sellPremium = clamp(
+    0.18 + growthSupport * 0.4 + marginSupport * 0.25 - debtPenalty * 0.2,
+    0.12,
+    0.32
+  );
+  const buyValue = fairValue === null || safetyMargin === null ? null : fairValue * (1 - safetyMargin);
+  const sellValue = fairValue === null || sellPremium === null ? null : fairValue * (1 + sellPremium);
+  const upside = sellValue && totalMarketCap > 0 ? (sellValue / totalMarketCap - 1) * 100 : null;
+
+  return {
+    dcfValue,
+    forwardPeValue,
+    fcfYieldValue,
+    fairValue,
+    buyValue,
+    sellValue,
+    targetPE,
+    safetyMargin,
+    sellPremium,
+    upside,
+    terminalGrowth,
+    requiredFcfYield,
+    forwardFcf
+  };
+}
+
 function calculateValuation() {
   const stockPrice = getInputNumber('stock-price') ?? 0;
   const dividendRate = getInputNumber('dividend-rate') ?? 0;
@@ -983,7 +1085,8 @@ function calculateValuation() {
 
   const tenYearTotalProfit = profitPredictions.reduce((sum, profit) => sum + profit, 0);
   const grossMarginDiff = (currentGrossMargin - previousGrossMargin) / 100;
-  const buyingCoefficient = (1 + (0.5 - debtRatio / 100)) * (1 + dividendRate / 100) * (1 + grossMarginDiff);
+  const debtAdjustment = clamp(1 + (0.5 - debtRatio / 100), 0.6, 1.4);
+  const buyingCoefficient = debtAdjustment * (1 + dividendRate / 100) * (1 + grossMarginDiff);
   const intrinsicValue = tenYearTotalProfit * buyingCoefficient;
   const intrinsicSellValue = intrinsicValue * profitTaking;
   const buyPoints = Array.from({ length: 5 }, (_, index) => intrinsicValue * Math.pow(0.9, index + 1));
@@ -997,6 +1100,20 @@ function calculateValuation() {
     : null;
   const sellValues = [intrinsicSellValue, peSellValue, surplusSellValue].filter((value) => Number.isFinite(value));
   const comprehensiveSellValue = sellValues.length ? average(sellValues) : null;
+  const investmentBankValuation = calculateInvestmentBankValuation({
+    profitPredictions,
+    discountRate,
+    perpetualGrowth,
+    expectedGrowth,
+    currentGrossMargin,
+    previousGrossMargin,
+    debtRatio,
+    dividendRate,
+    dAndA,
+    capex,
+    reasonablePE,
+    totalMarketCap
+  });
 
   setTextValue('discount-rate', discountRate * 100, 2, '%');
   setTextValue('buying-coefficient', buyingCoefficient, 4);
@@ -1009,6 +1126,16 @@ function calculateValuation() {
   setTextValue('surplus-sell-value', surplusSellValue);
   setTextValue('comprehensive-sell-value', comprehensiveSellValue);
   setTextValue('summary-sell-value', comprehensiveSellValue);
+  setTextValue('ib-fair-value', investmentBankValuation.fairValue);
+  setTextValue('ib-buy-value', investmentBankValuation.buyValue);
+  setTextValue('ib-sell-value', investmentBankValuation.sellValue);
+  setTextValue('ib-upside', investmentBankValuation.upside, 2, '%');
+  setTextValue('ib-dcf-value', investmentBankValuation.dcfValue);
+  setTextValue('ib-forward-pe-value', investmentBankValuation.forwardPeValue);
+  setTextValue('ib-fcf-yield-value', investmentBankValuation.fcfYieldValue);
+  setTextValue('ib-target-pe', investmentBankValuation.targetPE, 2, 'x');
+  setTextValue('ib-safety-margin', ratioToPercent(investmentBankValuation.safetyMargin), 2, '%');
+  setTextValue('ib-sell-premium', ratioToPercent(investmentBankValuation.sellPremium), 2, '%');
   const sellPrices = {
     intrinsicSellPrice: setPointPrice('intrinsic-sell-price', intrinsicSellValue, totalShares),
     peSellPrice: setPointPrice('pe-sell-price', peSellValue, totalShares),
@@ -1016,6 +1143,11 @@ function calculateValuation() {
     comprehensiveSellPrice: setPointPrice('comprehensive-sell-price', comprehensiveSellValue, totalShares)
   };
   setPointPrice('summary-sell-price', comprehensiveSellValue, totalShares);
+  const investmentBankPrices = {
+    ibFairPrice: setPointPrice('ib-fair-price', investmentBankValuation.fairValue, totalShares),
+    ibBuyPrice: setPointPrice('ib-buy-price', investmentBankValuation.buyValue, totalShares),
+    ibSellPrice: setPointPrice('ib-sell-price', investmentBankValuation.sellValue, totalShares)
+  };
   buyPoints.forEach((point, index) => setTextValue(`buy-point-${index + 1}`, point));
   setTextValue('final-buy-point', finalBuyPoint);
   const buyPointPrices = buyPoints.map((point, index) => setPointPrice(`buy-point-${index + 1}-price`, point, totalShares));
@@ -1044,6 +1176,7 @@ function calculateValuation() {
     },
     outputs: {
       discountRate,
+      debtAdjustment,
       buyingCoefficient,
       intrinsicValue,
       totalSurplusValue,
@@ -1054,6 +1187,8 @@ function calculateValuation() {
       surplusSellValue,
       comprehensiveSellValue,
       ...sellPrices,
+      investmentBankValuation,
+      ...investmentBankPrices,
       buyPoints,
       buyPointPrices,
       finalBuyPoint,
@@ -1198,11 +1333,25 @@ function showHistoryDetail(recordId) {
     ['总体盈余卖点', `${formatNumber(record.outputs.surplusSellValue)} 亿元`],
     ['综合卖点', `${formatNumber(record.outputs.comprehensiveSellValue)} 亿元`]
   ])}
+      ${detailSection('投行估值口径', [
+    ['DCF/FCFF估值', `${formatNumber(record.outputs.investmentBankValuation?.dcfValue)} 亿元`],
+    ['远期PE估值', `${formatNumber(record.outputs.investmentBankValuation?.forwardPeValue)} 亿元`],
+    ['FCF收益率估值', `${formatNumber(record.outputs.investmentBankValuation?.fcfYieldValue)} 亿元`],
+    ['投行合理市值', `${formatNumber(record.outputs.investmentBankValuation?.fairValue)} 亿元`],
+    ['投行买点市值', `${formatNumber(record.outputs.investmentBankValuation?.buyValue)} 亿元`],
+    ['投行卖点市值', `${formatNumber(record.outputs.investmentBankValuation?.sellValue)} 亿元`],
+    ['投行目标PE', `${formatNumber(record.outputs.investmentBankValuation?.targetPE)}x`],
+    ['安全边际', `${formatNumber(ratioToPercent(record.outputs.investmentBankValuation?.safetyMargin))}%`],
+    ['卖点溢价', `${formatNumber(ratioToPercent(record.outputs.investmentBankValuation?.sellPremium))}%`]
+  ])}
       ${detailSection('对应股价', [
     ['内在价值卖点股价', `${formatNumber(record.outputs.intrinsicSellPrice)} 元/股`],
     ['PE卖点股价', `${formatNumber(record.outputs.peSellPrice)} 元/股`],
     ['总体盈余卖点股价', `${formatNumber(record.outputs.surplusSellPrice)} 元/股`],
     ['综合卖点股价', `${formatNumber(record.outputs.comprehensiveSellPrice)} 元/股`],
+    ['投行合理股价', `${formatNumber(record.outputs.ibFairPrice)} 元/股`],
+    ['投行买点股价', `${formatNumber(record.outputs.ibBuyPrice)} 元/股`],
+    ['投行卖点股价', `${formatNumber(record.outputs.ibSellPrice)} 元/股`],
     ['加仓点一股价', `${formatNumber(record.outputs.buyPointPrices?.[0])} 元/股`],
     ['加仓点二股价', `${formatNumber(record.outputs.buyPointPrices?.[1])} 元/股`],
     ['加仓点三股价', `${formatNumber(record.outputs.buyPointPrices?.[2])} 元/股`],

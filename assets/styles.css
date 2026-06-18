@@ -397,6 +397,10 @@ button:disabled {
   color: var(--accent);
 }
 
+.card--banker {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -405,6 +409,14 @@ button:disabled {
 
 .metric-grid--six {
   grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.metric-grid--banker {
+  margin-bottom: 10px;
+}
+
+.metric-grid--compact div {
+  min-height: 72px;
 }
 
 .metric-grid div {
@@ -563,7 +575,8 @@ svg {
   }
 
   .metric-grid,
-  .metric-grid--six {
+  .metric-grid--six,
+  .metric-grid--banker {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -603,7 +616,8 @@ svg {
   }
 
   .metric-grid,
-  .metric-grid--six {
+  .metric-grid--six,
+  .metric-grid--banker {
     grid-template-columns: 1fr;
   }
 
