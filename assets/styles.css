@@ -389,6 +389,18 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.metric-price--danger {
+  color: var(--danger);
+}
+
+.metric-price--success {
+  color: var(--success);
+}
+
+.metric-price--muted {
+  color: var(--muted);
+}
+
 .metric-card--accent {
   background: var(--accent-soft);
 }
