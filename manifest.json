@@ -1,0 +1,17 @@
+{
+  "name": "A股联网估值模型",
+  "short_name": "A股估值",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f6f7f4",
+  "theme_color": "#0f766e",
+  "description": "输入公司名称或股票代码后自动取数并计算A股估值结果。",
+  "icons": [
+    {
+      "src": "assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

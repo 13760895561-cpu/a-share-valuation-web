@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="description" content="A股联网估值工具，输入公司名称或股票代码自动取数并计算估值结果。">
+  <title>A股联网估值模型</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+  <script src="assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__inner">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true"><i data-lucide="line-chart"></i></span>
+        <div>
+          <h1>A股联网估值模型</h1>
+          <p id="as-of-time">等待取数</p>
+        </div>
+      </div>
+      <div class="topbar__actions">
+        <button class="icon-btn" id="theme-toggle" type="button" aria-label="切换深色模式" title="切换深色模式">
+          <i data-lucide="moon"></i>
+        </button>
+        <button class="icon-btn" id="help-btn" type="button" aria-label="打开帮助" title="帮助">
+          <i data-lucide="circle-help"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <section class="search-panel" aria-label="联网取数">
+      <div class="search-panel__main">
+        <label for="stock-search">公司名称或股票代码</label>
+        <div class="search-row">
+          <input id="stock-search" type="search" autocomplete="off" placeholder="600519 / 贵州茅台 / 688981.SH">
+          <button id="auto-fill-btn" class="btn btn-primary" type="button">
+            <i data-lucide="cloud-download"></i>
+            <span>联网取数</span>
+          </button>
+        </div>
+        <div class="quick-row" aria-label="常用样例">
+          <button type="button" class="chip" data-stock="600519">贵州茅台</button>
+          <button type="button" class="chip" data-stock="300750">宁德时代</button>
+          <button type="button" class="chip" data-stock="688981">中芯国际</button>
+        </div>
+      </div>
+      <div class="status-box" id="data-status" role="status">输入后可自动取公开行情、财务报表、现金流和盈利预测。</div>
+    </section>
+
+    <nav class="tabs" id="tabs" aria-label="页面切换">
+      <button class="tab tab-active" id="valuation-tab" data-tab="valuation" type="button">
+        <i data-lucide="calculator"></i>
+        <span>估值计算</span>
+      </button>
+      <button class="tab tab-inactive" id="history-tab" data-tab="history" type="button">
+        <i data-lucide="history"></i>
+        <span>历史记录</span>
+      </button>
+    </nav>
+
+    <section id="valuation-content" class="tab-content">
+      <div class="workspace-grid">
+        <aside class="input-panel">
+          <div class="panel-heading">
+            <h2>输入参数</h2>
+            <button id="share-link-btn" class="ghost-btn" type="button">
+              <i data-lucide="link"></i>
+              <span>复制链接</span>
+            </button>
+          </div>
+
+          <form id="valuation-form" class="form-grid">
+            <div class="field field-span-2">
+              <label for="stock-name">公司名称</label>
+              <input type="text" id="stock-name" placeholder="公司名称">
+            </div>
+            <div class="field">
+              <label for="stock-code">股票代码</label>
+              <input type="text" id="stock-code" placeholder="股票代码">
+            </div>
+            <div class="field">
+              <label for="stock-price">股价（元）</label>
+              <input type="number" id="stock-price" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="dividend-rate">股息率TTM（%）</label>
+              <input type="number" id="dividend-rate" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="total-shares">总股本（亿股）</label>
+              <input type="number" id="total-shares" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="current-gross-margin">最新毛利率（%）</label>
+              <input type="number" id="current-gross-margin" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="previous-gross-margin">三年前毛利率（%）</label>
+              <input type="number" id="previous-gross-margin" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="debt-ratio">负债率（%）</label>
+              <input type="number" id="debt-ratio" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="d-and-a">预计D&A（亿元）</label>
+              <input type="number" id="d-and-a" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="capex">预计Capex（亿元）</label>
+              <input type="number" id="capex" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="perpetual-growth">永续增长率（%）</label>
+              <input type="number" id="perpetual-growth" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="expected-growth">预期增速（%）</label>
+              <input type="number" id="expected-growth" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="net-profit">预计N归母净利润（亿元）</label>
+              <input type="number" id="net-profit" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label for="profit-taking">止盈系数（倍）</label>
+              <input type="number" id="profit-taking" step="0.001" placeholder="0.000">
+            </div>
+            <div class="form-actions field-span-2">
+              <button type="button" id="calculate-btn" class="btn btn-primary">
+                <i data-lucide="calculator"></i>
+                <span>计算估值</span>
+              </button>
+              <button type="button" id="save-btn" class="btn btn-accent" disabled>
+                <i data-lucide="save"></i>
+                <span>保存结果</span>
+              </button>
+            </div>
+          </form>
+        </aside>
+
+        <section class="results-stack" aria-label="估值结果">
+          <div class="hero-metrics">
+            <article class="metric-card metric-card--accent">
+              <span>综合卖点市值</span>
+              <strong id="comprehensive-sell-value">--</strong>
+              <small>亿元</small>
+            </article>
+            <article class="metric-card">
+              <span>总市值</span>
+              <strong id="total-market-cap">--</strong>
+              <small>亿元</small>
+            </article>
+            <article class="metric-card">
+              <span>内在价值</span>
+              <strong id="intrinsic-value">--</strong>
+              <small>亿元</small>
+            </article>
+          </div>
+
+          <div class="card">
+            <div class="card-heading">
+              <h2>基础指标</h2>
+            </div>
+            <div class="metric-grid">
+              <div><span>贴现率</span><strong id="discount-rate">--</strong></div>
+              <div><span>买入系数</span><strong id="buying-coefficient">--</strong></div>
+              <div><span>总体盈余内在价值</span><strong id="total-surplus-value">--</strong></div>
+              <div><span>合理PE</span><strong id="reasonable-pe">--</strong></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-heading">
+              <h2>十年归母净利润预测</h2>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="profit-chart" aria-label="十年归母净利润预测图"></canvas>
+              <p id="chart-fallback" class="chart-fallback hidden">图表库未加载，计算结果仍可使用。</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-heading">
+              <h2>卖点市值分析</h2>
+            </div>
+            <div class="metric-grid">
+              <div><span>内在价值卖点</span><strong id="intrinsic-sell-value">--</strong></div>
+              <div><span>PE卖点</span><strong id="pe-sell-value">--</strong></div>
+              <div><span>总体盈余卖点</span><strong id="surplus-sell-value">--</strong></div>
+              <div><span>综合卖点</span><strong id="summary-sell-value">--</strong></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-heading">
+              <h2>加仓点分析</h2>
+            </div>
+            <div class="metric-grid metric-grid--six">
+              <div><span>加仓点一</span><strong id="buy-point-1">--</strong></div>
+              <div><span>加仓点二</span><strong id="buy-point-2">--</strong></div>
+              <div><span>加仓点三</span><strong id="buy-point-3">--</strong></div>
+              <div><span>加仓点四</span><strong id="buy-point-4">--</strong></div>
+              <div><span>加仓点五</span><strong id="buy-point-5">--</strong></div>
+              <div><span>最后加仓点</span><strong id="final-buy-point">--</strong></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="history-content" class="tab-content hidden">
+      <div class="card">
+        <div class="card-heading card-heading--actions">
+          <h2>历史估值记录</h2>
+          <div class="inline-actions">
+            <button id="export-history-btn" class="ghost-btn" type="button">
+              <i data-lucide="download"></i>
+              <span>导出</span>
+            </button>
+            <button id="clear-history-btn" class="ghost-btn ghost-btn--danger" type="button">
+              <i data-lucide="trash-2"></i>
+              <span>清空</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>公司名称</th>
+                <th>股票代码</th>
+                <th>估值日期</th>
+                <th>内在价值</th>
+                <th>综合卖点</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="history-table-body">
+              <tr><td colspan="6">暂无历史记录</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>数据来自公开行情与财务接口，结果仅供研究参考，不构成投资建议。</span>
+  </footer>
+
+  <div id="history-detail-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal__panel">
+      <div class="modal__head">
+        <h3 id="modal-title">估值详情</h3>
+        <button id="close-modal-btn" class="icon-btn" type="button" aria-label="关闭详情">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div id="modal-content" class="modal__content"></div>
+    </div>
+  </div>
+
+  <div id="help-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="modal__panel modal__panel--narrow">
+      <div class="modal__head">
+        <h3 id="help-title">取数口径</h3>
+        <button id="close-help-btn" class="icon-btn" type="button" aria-label="关闭帮助">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal__content">
+        <div class="note-list">
+          <p>行情、股息率TTM、总股本使用实时行情接口。</p>
+          <p>毛利率和负债率使用最新公开财报，三年前毛利率使用三年前年度报表。</p>
+          <p>D&A 与 Capex 使用同花顺年度现金流量表近年均值。</p>
+          <p>盈利预测使用东方财富券商盈利预测，关注度高取保守值，关注度低取乐观值。</p>
+          <p>止盈系数使用沪深300或中证500的 MA60/MA250 判断。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+</body>
+</html>
