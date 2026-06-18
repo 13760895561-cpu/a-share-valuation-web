@@ -4,6 +4,7 @@ const STORAGE_KEY = 'stockValuations.v2';
 let profitChart = null;
 let savedValuations = readSavedValuations();
 let currentValuation = null;
+let currentForecastMeta = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   applySavedTheme();
@@ -316,6 +317,21 @@ function setMarketStatus(id, status) {
   element.className = status?.className || 'metric-price metric-price--muted';
 }
 
+function getForecastDisplayMeta() {
+  return currentForecastMeta || {
+    source: 'manual',
+    label: '手动输入预测',
+    detail: '按当前输入参数计算',
+    forecastItems: []
+  };
+}
+
+function setProfitForecastSource(meta) {
+  const element = qs('profit-forecast-source');
+  if (!element) return;
+  element.textContent = meta?.label ? `预测来源：${meta.label}` : '预测来源 --';
+}
+
 function normalizeStockKeyword(value) {
   const trimmed = value.trim();
   const codeMatch = trimmed.match(/(?:sh|sz|bj)?\s*(\d{6})|(\d{6})\s*(?:\.|\s)*(?:sh|sz|bj)/i);
@@ -378,6 +394,154 @@ function calcHistoricalProfitGrowth(annualRows) {
     return (Math.pow(latestProfit / baseProfit, 1 / baseIndex) - 1) * 100;
   }
   return toNumber(annualRows[0].PARENT_NETPROFIT_RATIO) ?? 0;
+}
+
+function calculateGrowthRate(current, previous) {
+  const currentNumber = toNumber(current);
+  const previousNumber = toNumber(previous);
+  if (currentNumber === null || previousNumber === null || previousNumber <= 0) return null;
+  return (currentNumber / previousNumber - 1) * 100;
+}
+
+function calculateCagr(current, base, years) {
+  const currentNumber = toNumber(current);
+  const baseNumber = toNumber(base);
+  if (currentNumber === null || baseNumber === null || !years || currentNumber <= 0 || baseNumber <= 0) return null;
+  return (Math.pow(currentNumber / baseNumber, 1 / years) - 1) * 100;
+}
+
+function getAnnualFinancialMetrics(row) {
+  const revenue = toYi(row?.TOTAL_OPERATE_INCOME);
+  const profit = toYi(row?.PARENT_NETPROFIT);
+  return {
+    year: getYear(row?.REPORT_DATE),
+    revenue,
+    profit,
+    grossMargin: calcGrossMargin(row),
+    netMargin: revenue && profit !== null ? (profit / revenue) * 100 : null
+  };
+}
+
+function estimateIndustryBaseGrowth(industryText) {
+  const text = industryText || '';
+  if (/半导体|芯片|集成电路|人工智能|AI|软件|计算机|通信|电子|机器人|新能源|电池|光伏|军工|高端装备|创新药|生物医药/.test(text)) {
+    return 14;
+  }
+  if (/医药|医疗|消费电子|汽车|机械|化工|新材料|传媒|互联网|游戏/.test(text)) {
+    return 10;
+  }
+  if (/食品|饮料|白酒|家电|家居|农业|纺织|服装|零售|物流/.test(text)) {
+    return 6;
+  }
+  if (/房地产|房屋|物业|建筑|水泥|钢铁|煤炭|石油|银行|保险|证券|公路|铁路|港口|机场|电力|燃气|水务|环保/.test(text)) {
+    return 3;
+  }
+  return 7;
+}
+
+function estimateInvestmentBankProfitForecast({
+  annualIncomeRows,
+  latestAnnualProfit,
+  industryText,
+  debtRatio,
+  dAndA,
+  capex
+}) {
+  const annualMetrics = annualIncomeRows
+    .map(getAnnualFinancialMetrics)
+    .filter((item) => item.year && item.revenue && item.profit !== null);
+  const latest = annualMetrics[0];
+  if (!latest || latest.profit <= 0) {
+    return null;
+  }
+
+  const previous = annualMetrics[1] || {};
+  const threeYearsAgo = annualMetrics[Math.min(3, annualMetrics.length - 1)] || {};
+  const recentRevenueGrowth = calculateGrowthRate(latest.revenue, previous.revenue);
+  const revenueCagr = calculateCagr(latest.revenue, threeYearsAgo.revenue, annualMetrics.indexOf(threeYearsAgo));
+  const recentProfitGrowth = calculateGrowthRate(latest.profit, previous.profit);
+  const profitCagr = calculateCagr(latest.profit, threeYearsAgo.profit, annualMetrics.indexOf(threeYearsAgo));
+  const industryGrowth = estimateIndustryBaseGrowth(industryText);
+  const revenueGrowthBase = clamp(
+    average([
+      recentRevenueGrowth,
+      revenueCagr,
+      industryGrowth
+    ].filter((value) => Number.isFinite(value))),
+    -8,
+    30
+  ) ?? industryGrowth;
+  const positiveMargins = annualMetrics
+    .slice(0, 5)
+    .map((item) => item.netMargin)
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const averageNetMargin = average(positiveMargins);
+  const medianNetMargin = median(positiveMargins);
+  const latestNetMargin = latest.netMargin ?? averageNetMargin ?? 3;
+  const targetNetMargin = clamp(
+    latestNetMargin * 0.55 + (averageNetMargin ?? latestNetMargin) * 0.3 + (medianNetMargin ?? latestNetMargin) * 0.15,
+    Math.max(latestNetMargin * 0.75, 0.5),
+    Math.max(latestNetMargin, averageNetMargin ?? latestNetMargin, medianNetMargin ?? latestNetMargin) * 1.2
+  ) ?? latestNetMargin;
+  const profitRecovered = Number.isFinite(recentProfitGrowth) && recentProfitGrowth > 20 && Number.isFinite(recentRevenueGrowth) && recentRevenueGrowth > 0;
+  const businessUnderPressure = Number.isFinite(recentProfitGrowth) && recentProfitGrowth < -20 && Number.isFinite(recentRevenueGrowth) && recentRevenueGrowth < 0;
+  const highCapexPressure = dAndA !== null && capex !== null && capex > dAndA * 1.6;
+  const debtDrag = debtRatio !== null && debtRatio > 60 ? -3 : 0;
+  const capexDrag = highCapexPressure ? -2 : 0;
+  let profitGrowthBase;
+
+  if (profitRecovered) {
+    profitGrowthBase = clamp(revenueGrowthBase * 0.75 + 8 + debtDrag + capexDrag, 6, 28);
+  } else if (businessUnderPressure) {
+    profitGrowthBase = clamp((profitCagr ?? recentProfitGrowth ?? -5) * 0.25 + revenueGrowthBase * 0.35 + debtDrag, -8, 8);
+  } else {
+    profitGrowthBase = clamp(revenueGrowthBase * 0.65 + (profitCagr ?? 0) * 0.15 + debtDrag + capexDrag, -5, 22);
+  }
+
+  const firstYearGrowth = profitGrowthBase;
+  const secondYearGrowth = clamp(profitGrowthBase * 0.85, -6, 24);
+  const thirdYearGrowth = clamp(profitGrowthBase * 0.7, -5, 20);
+  const revenueGrowthPath = [
+    revenueGrowthBase,
+    clamp(revenueGrowthBase * 0.85, -6, 24),
+    clamp(revenueGrowthBase * 0.7, -5, 20)
+  ];
+  const marginPath = [0.45, 0.7, 0.9].map((weight) => latestNetMargin + (targetNetMargin - latestNetMargin) * weight);
+  const forecastItems = [];
+  let revenueBase = latest.revenue;
+  let profitBase = latestAnnualProfit ?? latest.profit;
+
+  for (let index = 0; index < 3; index += 1) {
+    revenueBase *= 1 + revenueGrowthPath[index] / 100;
+    const marginBasedProfit = revenueBase * (marginPath[index] / 100);
+    const trendBasedProfit = profitBase * (1 + [firstYearGrowth, secondYearGrowth, thirdYearGrowth][index] / 100);
+    const netProfit = weightedAverage([
+      { value: marginBasedProfit, weight: 0.55 },
+      { value: trendBasedProfit, weight: 0.45 }
+    ]) ?? trendBasedProfit;
+    forecastItems.push({
+      year: latest.year ? latest.year + index + 1 : index + 1,
+      netProfit,
+      revenue: revenueBase,
+      netMargin: marginPath[index]
+    });
+    profitBase = netProfit;
+  }
+
+  const selectedNetProfit = forecastItems[0]?.netProfit ?? latest.profit;
+  const expectedGrowth = forecastItems.length >= 3 && selectedNetProfit > 0
+    ? (Math.pow(forecastItems[2].netProfit / selectedNetProfit, 1 / 2) - 1) * 100
+    : firstYearGrowth;
+  const modelType = profitRecovered ? '修复型' : businessUnderPressure ? '承压型' : '稳健型';
+
+  return {
+    selectedNetProfit,
+    expectedGrowth: clamp(expectedGrowth, -8, 30) ?? 0,
+    forecastItems,
+    modelType,
+    revenueGrowthBase,
+    targetNetMargin
+  };
 }
 
 function chooseThreeYearsAgoAnnualRow(annualRows) {
@@ -939,8 +1103,32 @@ async function autoFillByStock() {
     const dAndA = cashAverages?.dAndA;
     const capex = cashAverages?.capex ?? fallbackCapex;
     const perpetualGrowth = estimatePerpetualGrowth(industryText);
-    const expectedGrowth = forecast?.expectedGrowth ?? historicalGrowth;
-    const netProfit = forecast?.selectedNetProfit ?? latestAnnualProfit;
+    const bankerForecast = forecast ? null : estimateInvestmentBankProfitForecast({
+      annualIncomeRows,
+      latestAnnualProfit,
+      industryText,
+      debtRatio,
+      dAndA,
+      capex
+    });
+    const forecastMeta = forecast
+      ? {
+        source: 'broker',
+        label: '券商盈利预测',
+        detail: `券商预测机构数${forecast.institutionCount}家`,
+        forecastItems: forecast.forecastItems
+      }
+      : {
+        source: bankerForecast ? 'investment-bank' : 'historical',
+        label: bankerForecast ? '投行方式简易盈利预测' : '历史数据兜底预测',
+        detail: bankerForecast
+          ? `${bankerForecast.modelType}，收入趋势${formatNumber(bankerForecast.revenueGrowthBase)}%，目标净利率${formatNumber(bankerForecast.targetNetMargin)}%`
+          : '投行模型输入不足，退回历史年报增速',
+        forecastItems: bankerForecast?.forecastItems || []
+      };
+    currentForecastMeta = forecastMeta;
+    const expectedGrowth = forecast?.expectedGrowth ?? bankerForecast?.expectedGrowth ?? historicalGrowth;
+    const netProfit = forecast?.selectedNetProfit ?? bankerForecast?.selectedNetProfit ?? latestAnnualProfit;
     const notes = [];
 
     qs('stock-search').value = `${quote.name} ${code}`;
@@ -966,7 +1154,9 @@ async function autoFillByStock() {
     if (dAndA === null || dAndA === undefined) notes.push('同花顺D&A明细未取到，按0处理');
     if (capex === null || capex === undefined) notes.push('Capex未取到，按0处理');
     if (!forecast) {
-      notes.push('券商盈利预测未取到，使用历史年报增速和最近年报净利润兜底');
+      notes.push(bankerForecast
+        ? `券商盈利预测未取到，启用${forecastMeta.label}：${forecastMeta.detail}`
+        : '券商盈利预测未取到，投行模型输入不足，使用历史年报增速和最近年报净利润兜底');
     } else {
       notes.push(`券商预测机构数${forecast.institutionCount}家，${forecast.institutionCount > 10 ? '高关注取三年预测低值' : '低关注取三年预测高值'}`);
     }
@@ -1200,7 +1390,11 @@ function calculateValuation() {
   setTextValue('final-buy-point', finalBuyPoint);
   const buyPointPrices = buyPoints.map((point, index) => setPointPrice(`buy-point-${index + 1}-price`, point, totalShares));
   const finalBuyPointPrice = setPointPrice('final-buy-point-price', finalBuyPoint, totalShares);
-  renderProfitChart(profitPredictions);
+  const forecastMeta = getForecastDisplayMeta();
+  const threeYearProfitPredictions = forecastMeta.forecastItems?.length >= 3
+    ? forecastMeta.forecastItems.slice(0, 3).map((item) => item.netProfit)
+    : profitPredictions.slice(0, 3);
+  renderProfitChart(threeYearProfitPredictions, forecastMeta);
   qs('save-btn').disabled = false;
 
   currentValuation = {
@@ -1244,14 +1438,17 @@ function calculateValuation() {
       buyPointPrices,
       finalBuyPoint,
       finalBuyPointPrice,
-      profitPredictions
+      profitPredictions,
+      threeYearProfitPredictions,
+      forecastMeta
     }
   };
 
   return currentValuation;
 }
 
-function renderProfitChart(profitPredictions) {
+function renderProfitChart(threeYearProfitPredictions, forecastMeta = getForecastDisplayMeta()) {
+  setProfitForecastSource(forecastMeta);
   if (!window.Chart) {
     qs('chart-fallback').classList.remove('hidden');
     return;
@@ -1265,10 +1462,12 @@ function renderProfitChart(profitPredictions) {
   profitChart = new Chart(context, {
     type: 'bar',
     data: {
-      labels: ['N', 'N+1', 'N+2', 'N+3', 'N+4', 'N+5', 'N+6', 'N+7', 'N+8', 'N+9'],
+      labels: forecastMeta.forecastItems?.length >= 3
+        ? forecastMeta.forecastItems.slice(0, 3).map((item, index) => item.year ? `${item.year}E` : (index === 0 ? 'N' : `N+${index}`))
+        : ['N', 'N+1', 'N+2'],
       datasets: [{
-        label: '预计归母净利润（亿元）',
-        data: profitPredictions,
+        label: `${forecastMeta.label || '归母净利润预测'}（亿元）`,
+        data: threeYearProfitPredictions,
         backgroundColor: '#0f766e',
         borderColor: '#0b5f59',
         borderWidth: 1,
@@ -1363,6 +1562,7 @@ function showHistoryDetail(recordId) {
     ['贴现率', `${formatNumber(record.outputs.discountRate * 100)}%`],
     ['买入系数', formatNumber(record.outputs.buyingCoefficient, 4)],
     ['合理PE', formatNumber(record.outputs.reasonablePE)],
+    ['盈利预测来源', record.outputs.forecastMeta?.label || '未记录'],
     ['N+2自由现金流', `${formatNumber(record.outputs.normalizedFcf)} 亿元`],
     ['总体盈余口径', record.outputs.fcfBasedValuationUsable ? '已纳入综合卖点' : '自由现金流为负，未纳入综合卖点'],
     ['股息率TTM', `${formatNumber(record.inputs.dividendRate)}%`]
