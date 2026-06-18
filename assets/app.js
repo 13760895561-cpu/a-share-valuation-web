@@ -5,6 +5,7 @@ let profitChart = null;
 let savedValuations = readSavedValuations();
 let currentValuation = null;
 let currentForecastMeta = null;
+let currentValuationContext = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   applySavedTheme();
@@ -286,6 +287,15 @@ function formatNumber(value, digits = 2) {
   });
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function setInputValue(id, value, digits = 2) {
   const input = qs(id);
   const number = toNumber(value);
@@ -460,6 +470,47 @@ function getAnnualFinancialMetrics(row) {
 
 function getIndustryProfile(industryText) {
   const text = industryText || '';
+  if (/银行|保险|证券|金融/.test(text)) {
+    return {
+      label: '金融行业',
+      baseGrowth: 3,
+      hotspotScore: 38,
+      targetMargin: 12,
+      marketAnchorMultiple: 10,
+      growthCap: 12,
+      stage: 'financial',
+      cycleScore: 45,
+      demandScore: 48,
+      supplyScore: 52,
+      valuationBias: 0.88,
+      peBase: 8,
+      peMin: 4.5,
+      peMax: 12,
+      pbBase: 0.85,
+      preferredMethods: ['PB', 'DDM', 'forwardPE'],
+      cycleLabel: '金融资产质量和利差周期约束估值'
+    };
+  }
+  if (/白酒|酿酒|酒类|贵州茅台|五粮液|泸州老窖|山西汾酒|洋河股份/.test(text)) {
+    return {
+      label: '高端白酒/可选消费',
+      baseGrowth: 2,
+      hotspotScore: 30,
+      targetMargin: 32,
+      marketAnchorMultiple: 16,
+      growthCap: 12,
+      stage: 'mature-consumption',
+      cycleScore: 38,
+      demandScore: 42,
+      supplyScore: 44,
+      valuationBias: 0.82,
+      peBase: 18,
+      peMin: 12,
+      peMax: 24,
+      preferredMethods: ['forwardPE', 'DDM', 'FCFE', 'EVEBITDA'],
+      cycleLabel: '需求换挡，渠道和价格体系更需保守验证'
+    };
+  }
   if (/半导体|芯片|集成电路|人工智能|AI|算力|软件|计算机|通信|电子|机器人|新能源|电池|光伏|军工|高端装备|创新药|生物医药|低空经济|卫星|数据中心/.test(text)) {
     return {
       label: '高成长科技/创新产业',
@@ -468,7 +519,16 @@ function getIndustryProfile(industryText) {
       targetMargin: 8,
       marketAnchorMultiple: 24,
       growthCap: 45,
-      stage: 'growth'
+      stage: 'growth',
+      cycleScore: 74,
+      demandScore: 72,
+      supplyScore: 58,
+      valuationBias: 1.08,
+      peBase: 28,
+      peMin: 16,
+      peMax: 48,
+      preferredMethods: ['forwardPE', 'PEG', 'FCFF', 'EVSales', 'Capacity'],
+      cycleLabel: '成长景气较高，但需验证订单、产能和现金流兑现'
     };
   }
   if (/医药|医疗|消费电子|汽车|机械|化工|新材料|传媒|互联网|游戏|智能终端|智能硬件|MR|AR|VR|折叠屏/.test(text)) {
@@ -479,7 +539,16 @@ function getIndustryProfile(industryText) {
       targetMargin: 6,
       marketAnchorMultiple: 22,
       growthCap: 38,
-      stage: 'growth'
+      stage: 'growth',
+      cycleScore: 62,
+      demandScore: 63,
+      supplyScore: 55,
+      valuationBias: 1,
+      peBase: 24,
+      peMin: 14,
+      peMax: 40,
+      preferredMethods: ['forwardPE', 'PEG', 'FCFF', 'EVSales'],
+      cycleLabel: '成长属性仍在，但景气与竞争格局需要动态跟踪'
     };
   }
   if (/食品|饮料|白酒|家电|家居|农业|纺织|服装|零售|物流|快递/.test(text)) {
@@ -487,13 +556,22 @@ function getIndustryProfile(industryText) {
       label: '消费/稳定经营行业',
       baseGrowth: 6,
       hotspotScore: 48,
-      targetMargin: 5,
+      targetMargin: 8,
       marketAnchorMultiple: 18,
       growthCap: 24,
-      stage: 'stable'
+      stage: 'stable',
+      cycleScore: 52,
+      demandScore: 55,
+      supplyScore: 58,
+      valuationBias: 0.92,
+      peBase: 20,
+      peMin: 12,
+      peMax: 30,
+      preferredMethods: ['forwardPE', 'DDM', 'FCFE'],
+      cycleLabel: '稳定消费，重点看需求韧性和渠道库存'
     };
   }
-  if (/房地产|房屋|物业|建筑|水泥|钢铁|煤炭|石油|银行|保险|证券|公路|铁路|港口|机场|电力|燃气|水务|环保/.test(text)) {
+  if (/房地产|房屋|物业|建筑|水泥|钢铁|煤炭|石油|公路|铁路|港口|机场|电力|燃气|水务|环保/.test(text)) {
     return {
       label: '传统周期/金融公用行业',
       baseGrowth: 3,
@@ -501,7 +579,17 @@ function getIndustryProfile(industryText) {
       targetMargin: 3,
       marketAnchorMultiple: 12,
       growthCap: 16,
-      stage: 'traditional'
+      stage: 'traditional',
+      cycleScore: 40,
+      demandScore: 44,
+      supplyScore: 50,
+      valuationBias: 0.86,
+      peBase: 12,
+      peMin: 6,
+      peMax: 18,
+      pbBase: 1,
+      preferredMethods: ['PB', 'FCFF', 'EVEBITDA', 'NAV'],
+      cycleLabel: '周期和政策约束较强，重视资产质量与现金流'
     };
   }
   return {
@@ -511,7 +599,16 @@ function getIndustryProfile(industryText) {
     targetMargin: 4,
     marketAnchorMultiple: 18,
     growthCap: 30,
-    stage: 'balanced'
+    stage: 'balanced',
+    cycleScore: 55,
+    demandScore: 56,
+    supplyScore: 55,
+    valuationBias: 0.96,
+    peBase: 20,
+    peMin: 10,
+    peMax: 32,
+    preferredMethods: ['forwardPE', 'FCFF', 'EVEBITDA'],
+    cycleLabel: '综合行业，按盈利质量和现金流折中估值'
   };
 }
 
@@ -540,7 +637,20 @@ function parseEastmoneyKline(row) {
   };
 }
 
-async function fetchStockTrendContext(code, quote) {
+function parseTencentKline(row) {
+  return {
+    date: row?.[0],
+    open: toNumber(row?.[1]),
+    close: toNumber(row?.[2]),
+    high: toNumber(row?.[3]),
+    low: toNumber(row?.[4]),
+    volume: toNumber(row?.[5]),
+    amount: null,
+    turnoverRate: null
+  };
+}
+
+async function fetchEastmoneyTrendRows(code) {
   const secid = `${getStockMarketPrefix(code)}.${code}`;
   const response = await fetchJson('https://push2his.eastmoney.com/api/qt/stock/kline/get', {
     secid,
@@ -550,8 +660,26 @@ async function fetchStockTrendContext(code, quote) {
     end: '20500101',
     fields1: 'f1,f2,f3,f4,f5,f6',
     fields2: 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'
-  }, 15000, 1);
-  const rows = (response?.data?.klines || []).map(parseEastmoneyKline).filter((item) => item.close !== null);
+  }, 12000, 1);
+  return (response?.data?.klines || []).map(parseEastmoneyKline).filter((item) => item.close !== null);
+}
+
+async function fetchTencentTrendRows(code) {
+  const normalizedCode = String(code || '').replace(/\D/g, '');
+  const marketCode = getStockMarketPrefix(normalizedCode) === '1' ? `sh${normalizedCode}` : `sz${normalizedCode}`;
+  const response = await fetchJson('https://proxy.finance.qq.com/ifzqgtimg/appstock/app/fqkline/get', {
+    param: `${marketCode},day,,,520,qfq`
+  }, 12000, 1);
+  const data = response?.data?.[marketCode] || {};
+  const rows = data.qfqday || data.day || [];
+  return rows.map(parseTencentKline).filter((item) => item.close !== null);
+}
+
+async function fetchStockTrendContext(code, quote) {
+  let rows = await fetchEastmoneyTrendRows(code).catch(() => []);
+  if (rows.length < 120) {
+    rows = await fetchTencentTrendRows(code).catch(() => []);
+  }
   if (rows.length < 120) return null;
 
   const closes = rows.map((item) => item.close);
@@ -681,6 +809,175 @@ function estimateMarketForecastAdjustment({
     marginMultiplier,
     supportLabel
   };
+}
+
+function getScoreLabel(score) {
+  const value = toNumber(score);
+  if (value === null) return '数据不足';
+  if (value >= 72) return '偏强';
+  if (value >= 58) return '中性偏强';
+  if (value >= 45) return '中性';
+  if (value >= 35) return '偏弱';
+  return '明显偏弱';
+}
+
+function getActiveValuationContext(stockCode) {
+  const normalizedCode = normalizeStockKeyword(stockCode || '');
+  if (!currentValuationContext) return null;
+  if (!normalizedCode || currentValuationContext.code === normalizedCode) {
+    return currentValuationContext;
+  }
+  return null;
+}
+
+function calculateValuationEnvironment({
+  stockName,
+  stockCode,
+  industryText,
+  marketTrend,
+  annualMetrics,
+  expectedGrowth,
+  currentGrossMargin,
+  previousGrossMargin,
+  debtRatio,
+  dividendRate
+}) {
+  const profile = getIndustryProfile(`${industryText || ''},${stockName || ''},${stockCode || ''}`);
+  const latestAnnual = annualMetrics?.[0] || {};
+  const previousAnnual = annualMetrics?.[1] || {};
+  const recentRevenueGrowth = calculateGrowthRate(latestAnnual.revenue, previousAnnual.revenue);
+  const recentProfitGrowth = calculateGrowthRate(latestAnnual.profit, previousAnnual.profit);
+  const marginTrend = currentGrossMargin - previousGrossMargin;
+  const marketScore = marketTrend?.trendScore ?? 50;
+  const growthScore = clamp(
+    50
+      + (expectedGrowth ?? profile.baseGrowth) * 1.1
+      + (recentRevenueGrowth ?? profile.baseGrowth) * 0.35
+      + (recentProfitGrowth ?? 0) * 0.12,
+    20,
+    92
+  ) ?? 50;
+  const qualityScore = clamp(
+    45
+      + currentGrossMargin * 0.28
+      + marginTrend * 1.2
+      - Math.max((debtRatio ?? 0) - 45, 0) * 0.55
+      + Math.min(dividendRate ?? 0, 6) * 2.2,
+    20,
+    94
+  ) ?? 50;
+  const businessScore = weightedAverage([
+    { value: growthScore, weight: 0.46 },
+    { value: qualityScore, weight: 0.54 }
+  ]) ?? 50;
+  const industryCycleScore = clamp(
+    profile.cycleScore
+      + ((recentRevenueGrowth ?? profile.baseGrowth) - profile.baseGrowth) * 0.28
+      + (recentProfitGrowth ?? 0) * 0.08,
+    20,
+    92
+  ) ?? profile.cycleScore;
+  const demandScore = clamp(
+    profile.demandScore
+      + ((expectedGrowth ?? profile.baseGrowth) - profile.baseGrowth) * 0.32
+      + (recentRevenueGrowth ?? 0) * 0.12,
+    20,
+    92
+  ) ?? profile.demandScore;
+  const supplyDemandScore = clamp(
+    demandScore * 0.58 + profile.supplyScore * 0.42,
+    20,
+    92
+  ) ?? 50;
+  const environmentScore = weightedAverage([
+    { value: industryCycleScore, weight: 0.24 },
+    { value: profile.hotspotScore, weight: 0.16 },
+    { value: supplyDemandScore, weight: 0.18 },
+    { value: marketScore, weight: 0.22 },
+    { value: businessScore, weight: 0.2 }
+  ]) ?? 50;
+  let multiplier = profile.valuationBias * (0.78 + environmentScore * 0.0044);
+  if (marketTrend?.priceToMa250 !== null && marketTrend?.priceToMa250 < -12) multiplier *= 0.94;
+  if (marketTrend?.return250 !== null && marketTrend?.return250 < -18) multiplier *= 0.95;
+  if (profile.stage === 'mature-consumption' && (expectedGrowth ?? 0) < 8) multiplier *= 0.93;
+  if (profile.stage === 'growth' && environmentScore >= 68 && (expectedGrowth ?? 0) > 15) multiplier *= 1.05;
+
+  const valuationMultiplier = clamp(
+    multiplier,
+    profile.stage === 'growth' ? 0.68 : 0.55,
+    profile.stage === 'growth' ? 1.28 : 1.16
+  ) ?? 1;
+  const peMultipleFactor = clamp(
+    valuationMultiplier * (profile.stage === 'growth' ? 1.04 : profile.stage === 'mature-consumption' ? 0.92 : 0.98),
+    0.55,
+    1.24
+  ) ?? valuationMultiplier;
+  const cashFlowMultiplier = clamp(
+    valuationMultiplier * (1 + Math.min(dividendRate ?? 0, 6) * 0.008),
+    0.58,
+    1.2
+  ) ?? valuationMultiplier;
+  const riskPremium = clamp((55 - environmentScore) / 100 * 0.035, 0, 0.028) ?? 0;
+  const sellPremiumMultiplier = clamp(0.78 + environmentScore * 0.004, 0.86, 1.16) ?? 1;
+  const environmentLabel = environmentScore >= 68
+    ? '环境偏积极'
+    : environmentScore >= 55
+      ? '环境中性'
+      : environmentScore >= 42
+        ? '环境偏谨慎'
+        : '环境保守折扣';
+  const summary = `${profile.label}，${profile.cycleLabel}；行业景气${getScoreLabel(industryCycleScore)}，需求供需${getScoreLabel(supplyDemandScore)}，市场趋势${marketTrend?.trendLabel || getScoreLabel(marketScore)}，估值环境系数${formatNumber(valuationMultiplier, 2)}。`;
+
+  return {
+    profile,
+    environmentScore,
+    environmentLabel,
+    industryCycleScore,
+    demandScore,
+    supplyDemandScore,
+    marketScore,
+    businessScore,
+    valuationMultiplier,
+    peMultipleFactor,
+    cashFlowMultiplier,
+    riskPremium,
+    sellPremiumMultiplier,
+    summary,
+    recentRevenueGrowth,
+    recentProfitGrowth
+  };
+}
+
+function getTerminalGrowthCap(profile) {
+  if (profile?.stage === 'mature-consumption') return 0.015;
+  if (profile?.stage === 'financial' || profile?.stage === 'traditional') return 0.012;
+  if (profile?.stage === 'growth') return 0.03;
+  return 0.022;
+}
+
+function combineSellValuesWithEnvironment({
+  intrinsicSellValue,
+  peSellValue,
+  surplusSellValue,
+  adaptiveSellValue,
+  valuationEnvironment
+}) {
+  const profile = valuationEnvironment.profile;
+  const isWeakMature = ['mature-consumption', 'financial', 'traditional'].includes(profile.stage)
+    && valuationEnvironment.valuationMultiplier < 0.92;
+  const isStrongGrowth = profile.stage === 'growth' && valuationEnvironment.valuationMultiplier > 1.08;
+  const weights = isWeakMature
+    ? { intrinsic: 0.12, pe: 0.15, surplus: 0.18, adaptive: 0.55 }
+    : isStrongGrowth
+      ? { intrinsic: 0.24, pe: 0.26, surplus: 0.2, adaptive: 0.3 }
+      : { intrinsic: 0.22, pe: 0.25, surplus: 0.23, adaptive: 0.3 };
+
+  return weightedAverage([
+    { value: intrinsicSellValue, weight: weights.intrinsic },
+    { value: peSellValue, weight: weights.pe },
+    { value: surplusSellValue, weight: weights.surplus },
+    { value: adaptiveSellValue, weight: weights.adaptive }
+  ]);
 }
 
 function applyMarketImpliedForecastLift(forecastItems, marketTrend, industryProfile, marketAdjustment, latestProfit, quoteMarketCap) {
@@ -1604,6 +1901,22 @@ async function autoFillByStock() {
     ]);
 
     const industryText = `${forecast?.industry || ''},${forecast?.conceptText || ''},${quote.industry || ''},${quote.conceptText || ''}`;
+    const annualMetrics = annualIncomeRows
+      .map(getAnnualFinancialMetrics)
+      .filter((item) => item.year && (item.revenue || item.profit !== null));
+    currentValuationContext = {
+      code,
+      name: quote.name,
+      industryText,
+      quote,
+      marketTrend,
+      annualMetrics,
+      bookValue: toYi(latestBalance.TOTAL_EQUITY),
+      totalAssets: toYi(latestBalance.TOTAL_ASSETS),
+      cash: toYi(latestBalance.MONETARYFUNDS),
+      liabilities: toYi(latestBalance.TOTAL_LIABILITIES),
+      netDebt: (toYi(latestBalance.TOTAL_LIABILITIES) ?? 0) - (toYi(latestBalance.MONETARYFUNDS) ?? 0)
+    };
     const indexInfo = chooseIndexForProfitTaking(forecast, quote);
     const profitTakingInfo = await fetchProfitTakingCoefficient(indexInfo).catch(() => ({
       coefficient: 1.382,
@@ -1747,7 +2060,8 @@ function calculateInvestmentBankValuation({
   dAndA,
   capex,
   reasonablePE,
-  totalMarketCap
+  totalMarketCap,
+  valuationEnvironment
 }) {
   const forwardNetProfit = profitPredictions[2];
   const debtRatioValue = debtRatio / 100;
@@ -1755,13 +2069,14 @@ function calculateInvestmentBankValuation({
   const growthRate = expectedGrowth / 100;
   const marginLevel = currentGrossMargin / 100;
   const marginTrend = (currentGrossMargin - previousGrossMargin) / 100;
+  const profile = valuationEnvironment?.profile || getIndustryProfile('');
   const rawTerminalGrowth = Math.max(perpetualGrowth / 100, 0.005);
-  const terminalGrowth = Math.min(rawTerminalGrowth, Math.max(0.005, discountRate - 0.015));
+  const terminalGrowth = Math.min(rawTerminalGrowth, getTerminalGrowthCap(profile), Math.max(0.005, discountRate - 0.015));
   const forecastFcf = profitPredictions.slice(0, 5).map((profit) => profit + dAndA - capex);
   const pvFcf = forecastFcf.reduce((total, fcf, index) => total + fcf / Math.pow(1 + discountRate, index + 1), 0);
   const terminalFcf = forecastFcf[4] * (1 + terminalGrowth);
   const dcfValue = terminalFcf > 0 && discountRate > terminalGrowth
-    ? pvFcf + (terminalFcf / (discountRate - terminalGrowth)) / Math.pow(1 + discountRate, 5)
+    ? (pvFcf + (terminalFcf / (discountRate - terminalGrowth)) / Math.pow(1 + discountRate, 5)) * (valuationEnvironment?.cashFlowMultiplier ?? 1)
     : null;
   const qualityAdjustment = clamp(
     1
@@ -1773,10 +2088,19 @@ function calculateInvestmentBankValuation({
     1.3
   ) ?? 1;
   const growthMultiple = 12 + (clamp(expectedGrowth, -20, 60) ?? 0) * 0.45;
-  const targetPE = clamp((reasonablePE * 0.45 + growthMultiple * 0.55) * qualityAdjustment, 8, 45);
+  const targetPE = clamp(
+    (reasonablePE * 0.45 + growthMultiple * 0.55) * qualityAdjustment * (valuationEnvironment?.peMultipleFactor ?? 1),
+    profile.peMin ?? 8,
+    profile.peMax ?? 45
+  );
   const forwardPeValue = targetPE * forwardNetProfit;
   const forwardFcf = forwardNetProfit + dAndA - capex;
-  const requiredFcfYield = clamp(discountRate - terminalGrowth + 0.015, 0.045, 0.12);
+  const requiredFcfYieldFloor = profile.stage === 'mature-consumption'
+    ? 0.07
+    : profile.stage === 'financial' || profile.stage === 'traditional'
+      ? 0.065
+      : 0.045;
+  const requiredFcfYield = clamp(discountRate + (valuationEnvironment?.riskPremium ?? 0) - terminalGrowth + 0.015, requiredFcfYieldFloor, 0.14);
   const fcfYieldValue = forwardFcf > 0 && requiredFcfYield
     ? forwardFcf / requiredFcfYield
     : null;
@@ -1794,7 +2118,7 @@ function calculateInvestmentBankValuation({
     0.35
   );
   const sellPremium = clamp(
-    0.18 + growthSupport * 0.4 + marginSupport * 0.25 - debtPenalty * 0.2,
+    (0.18 + growthSupport * 0.4 + marginSupport * 0.25 - debtPenalty * 0.2) * (valuationEnvironment?.sellPremiumMultiplier ?? 1),
     0.12,
     0.32
   );
@@ -1819,7 +2143,293 @@ function calculateInvestmentBankValuation({
   };
 }
 
+function getForecastLabels(forecastMeta) {
+  const items = forecastMeta?.forecastItems || [];
+  return [0, 1, 2].map((index) => {
+    const year = items[index]?.year;
+    return year ? `${year}E` : (index === 0 ? 'N' : `N+${index}`);
+  });
+}
+
+function estimateRevenuePredictions(context, profile, expectedGrowth) {
+  const latestRevenue = context?.annualMetrics?.[0]?.revenue;
+  if (!latestRevenue || latestRevenue <= 0) return [];
+  const previousRevenue = context?.annualMetrics?.[1]?.revenue;
+  const recentRevenueGrowth = calculateGrowthRate(latestRevenue, previousRevenue);
+  const revenueGrowth = clamp(
+    average([
+      recentRevenueGrowth,
+      profile.baseGrowth,
+      (expectedGrowth ?? profile.baseGrowth) * 0.55
+    ].filter((value) => Number.isFinite(value))),
+    -8,
+    profile.growthCap
+  ) ?? profile.baseGrowth;
+
+  return [1, 2, 3].map((index) => latestRevenue * Math.pow(1 + revenueGrowth / 100, index));
+}
+
+function estimateBookValuePredictions(context, profitPredictions, payoutRatio) {
+  const baseBookValue = context?.bookValue;
+  if (!baseBookValue || baseBookValue <= 0) return [];
+  let bookValue = baseBookValue;
+  return profitPredictions.slice(0, 3).map((profit) => {
+    if (Number.isFinite(profit)) {
+      bookValue += profit * (1 - payoutRatio);
+    }
+    return bookValue;
+  });
+}
+
+function createMethodSeries(name, reason, values, assumption) {
+  const validValues = values.filter((item) => item && Number.isFinite(item.marketValue) && item.marketValue > 0);
+  if (!validValues.length) return null;
+  return {
+    name,
+    reason,
+    assumption,
+    values: validValues
+  };
+}
+
+function calculateIndustryAdaptiveValuation({
+  profitPredictions,
+  forecastMeta,
+  totalShares,
+  totalMarketCap,
+  discountRate,
+  perpetualGrowth,
+  expectedGrowth,
+  dividendRate,
+  dAndA,
+  capex,
+  valuationEnvironment,
+  context
+}) {
+  const profile = valuationEnvironment.profile;
+  const labels = getForecastLabels(forecastMeta);
+  const firstThreeProfits = profitPredictions.slice(0, 3);
+  const revenuePredictions = estimateRevenuePredictions(context, profile, expectedGrowth);
+  const payoutRatio = clamp(
+    totalMarketCap && dividendRate && firstThreeProfits[0] > 0
+      ? (totalMarketCap * dividendRate / 100) / firstThreeProfits[0]
+      : profile.stage === 'mature-consumption' ? 0.72 : 0.45,
+    profile.stage === 'mature-consumption' ? 0.45 : 0.2,
+    profile.stage === 'mature-consumption' ? 0.85 : 0.75
+  ) ?? 0.45;
+  const bookPredictions = estimateBookValuePredictions(context, firstThreeProfits, payoutRatio);
+  const netDebt = context?.netDebt ?? 0;
+  const terminalGrowth = clamp(perpetualGrowth / 100, 0.005, Math.min(getTerminalGrowthCap(profile), Math.max(0.005, discountRate - 0.018))) ?? 0.015;
+  const requiredReturn = clamp(discountRate + 0.035 + valuationEnvironment.riskPremium, 0.07, 0.14) ?? 0.09;
+  const requiredFcfYieldFloor = profile.stage === 'mature-consumption'
+    ? 0.07
+    : profile.stage === 'financial' || profile.stage === 'traditional'
+      ? 0.065
+      : 0.05;
+  const requiredFcfYield = clamp(discountRate + valuationEnvironment.riskPremium - terminalGrowth + 0.018, requiredFcfYieldFloor, 0.14) ?? 0.08;
+  const basePe = clamp(
+    (profile.peBase ?? 18) * valuationEnvironment.peMultipleFactor,
+    profile.peMin ?? 8,
+    profile.peMax ?? 38
+  ) ?? (profile.peBase ?? 18);
+  const methods = [];
+
+  if (firstThreeProfits.some((profit) => profit > 0)) {
+    methods.push(createMethodSeries(
+      '前瞻PE法',
+      `${profile.label}按行业景气和市场热度调整目标PE`,
+      firstThreeProfits.map((profit, index) => ({
+        label: labels[index],
+        marketValue: profit > 0 ? profit * basePe : null,
+        price: profit > 0 && totalShares ? profit * basePe / totalShares : null,
+        assumption: `${formatNumber(basePe, 1)}x`
+      })),
+      `目标PE ${formatNumber(basePe, 1)}x`
+    ));
+  }
+
+  if (firstThreeProfits.some((profit) => profit > 0) && (profile.stage === 'growth' || (expectedGrowth ?? 0) >= 10)) {
+    const pegPe = clamp(
+      Math.max(expectedGrowth ?? profile.baseGrowth, profile.baseGrowth) * (profile.stage === 'growth' ? 1.25 : 1) * valuationEnvironment.peMultipleFactor,
+      profile.peMin ?? 10,
+      profile.peMax ?? 45
+    ) ?? basePe;
+    methods.push(createMethodSeries(
+      'PEG法',
+      '成长型公司按盈利增速约束估值倍数',
+      firstThreeProfits.map((profit, index) => ({
+        label: labels[index],
+        marketValue: profit > 0 ? profit * pegPe : null,
+        price: profit > 0 && totalShares ? profit * pegPe / totalShares : null,
+        assumption: `${formatNumber(pegPe, 1)}x`
+      })),
+      `PEG约束PE ${formatNumber(pegPe, 1)}x`
+    ));
+  }
+
+  if ((profile.preferredMethods || []).includes('DDM') && firstThreeProfits.some((profit) => profit > 0)) {
+    const dividendGrowth = clamp((expectedGrowth ?? profile.baseGrowth) * 0.28 / 100, 0.005, 0.045) ?? 0.015;
+    methods.push(createMethodSeries(
+      'DDM股利折现',
+      '适用于高分红或成熟稳定行业',
+      firstThreeProfits.map((profit, index) => {
+        const dividend = profit > 0 ? profit * payoutRatio : null;
+        const denominator = requiredReturn - dividendGrowth;
+        const marketValue = dividend && denominator > 0.015 ? dividend * (1 + dividendGrowth) / denominator : null;
+        return {
+          label: labels[index],
+          marketValue,
+          price: marketValue && totalShares ? marketValue / totalShares : null,
+          assumption: `${formatNumber(payoutRatio * 100, 0)}%`
+        };
+      }),
+      `分红率${formatNumber(payoutRatio * 100, 0)}%，股权回报率${formatNumber(requiredReturn * 100, 1)}%`
+    ));
+  }
+
+  if (firstThreeProfits.some((profit) => profit + dAndA - capex > 0)) {
+    methods.push(createMethodSeries(
+      'FCFE/FCFF现金流法',
+      '按归母利润加折旧摊销并扣除资本开支估值',
+      firstThreeProfits.map((profit, index) => {
+        const fcf = profit + dAndA - capex;
+        const marketValue = fcf > 0 ? fcf / requiredFcfYield * valuationEnvironment.cashFlowMultiplier : null;
+        return {
+          label: labels[index],
+          marketValue,
+          price: marketValue && totalShares ? marketValue / totalShares : null,
+          assumption: `${formatNumber(requiredFcfYield * 100, 1)}%`
+        };
+      }),
+      `FCF收益率${formatNumber(requiredFcfYield * 100, 1)}%`
+    ));
+  }
+
+  if ((profile.preferredMethods || []).includes('EVEBITDA') && firstThreeProfits.some((profit) => profit > 0)) {
+    const evEbitdaMultiple = clamp(basePe * 0.62, 5, profile.stage === 'mature-consumption' ? 14 : 18) ?? 10;
+    methods.push(createMethodSeries(
+      'EV/EBITDA法',
+      '适用于利润稳定且折旧摊销可观的经营性公司',
+      firstThreeProfits.map((profit, index) => {
+        const ebitda = profit > 0 ? profit * 1.18 + dAndA : null;
+        const marketValue = ebitda ? ebitda * evEbitdaMultiple - netDebt : null;
+        return {
+          label: labels[index],
+          marketValue,
+          price: marketValue && totalShares ? marketValue / totalShares : null,
+          assumption: `${formatNumber(evEbitdaMultiple, 1)}x`
+        };
+      }),
+      `EV/EBITDA ${formatNumber(evEbitdaMultiple, 1)}x`
+    ));
+  }
+
+  if ((profile.preferredMethods || []).some((method) => ['PB', 'NAV'].includes(method)) && bookPredictions.length) {
+    const pbMultiple = clamp((profile.pbBase ?? 1) * valuationEnvironment.cashFlowMultiplier, 0.35, profile.stage === 'financial' ? 1.5 : 2.2) ?? 1;
+    methods.push(createMethodSeries(
+      profile.preferredMethods.includes('NAV') ? 'NAV/PB资产法' : 'PB市净率法',
+      '适用于金融、地产、资源或资产约束较强行业',
+      bookPredictions.map((bookValue, index) => ({
+        label: labels[index],
+        marketValue: bookValue * pbMultiple,
+        price: totalShares ? bookValue * pbMultiple / totalShares : null,
+        assumption: `${formatNumber(pbMultiple, 2)}x`
+      })),
+      `PB ${formatNumber(pbMultiple, 2)}x`
+    ));
+  }
+
+  if ((profile.preferredMethods || []).some((method) => ['EVSales', 'Capacity'].includes(method)) && revenuePredictions.length) {
+    const netMargin = context?.annualMetrics?.[0]?.netMargin ?? (firstThreeProfits[0] && revenuePredictions[0] ? firstThreeProfits[0] / revenuePredictions[0] * 100 : profile.targetMargin);
+    const salesMultiple = clamp(
+      (basePe * Math.max(netMargin, 2) / 100) * valuationEnvironment.cashFlowMultiplier,
+      0.8,
+      profile.stage === 'growth' ? 9 : 5
+    ) ?? 2;
+    const methodName = profile.preferredMethods.includes('Capacity') ? '产能/收入估值' : 'EV/Sales法';
+    methods.push(createMethodSeries(
+      methodName,
+      profile.preferredMethods.includes('Capacity')
+        ? '半导体等重资产成长行业用收入和产能强度近似校验'
+        : '亏损期或成长扩张期用收入规模校验估值',
+      revenuePredictions.map((revenue, index) => {
+        const marketValue = revenue * salesMultiple - netDebt;
+        return {
+          label: labels[index],
+          marketValue,
+          price: totalShares ? marketValue / totalShares : null,
+          assumption: `${formatNumber(salesMultiple, 1)}x`
+        };
+      }),
+      `收入倍数 ${formatNumber(salesMultiple, 1)}x`
+    ));
+  }
+
+  const selectedMethods = methods.filter(Boolean).slice(0, 4);
+  const latestValues = selectedMethods
+    .map((method) => method.values[0]?.marketValue)
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const fairValue = averagePositive(latestValues);
+  const fairPrice = fairValue && totalShares ? fairValue / totalShares : null;
+
+  return {
+    methods: selectedMethods,
+    fairValue,
+    fairPrice,
+    summary: `${profile.label}适配${selectedMethods.map((method) => method.name).join('、') || '基础估值'}；${valuationEnvironment.environmentLabel}，按${valuationEnvironment.summary}`
+  };
+}
+
+function renderValuationEnvironment(environment) {
+  qs('environment-badge').textContent = environment.environmentLabel;
+  qs('environment-badge').title = environment.summary;
+  setTextValue('environment-multiplier', environment.valuationMultiplier, 2);
+  setTextValue('industry-cycle-score', environment.industryCycleScore, 0);
+  setTextValue('market-trend-score', environment.marketScore, 0);
+  setTextValue('demand-supply-score', environment.supplyDemandScore, 0);
+  qs('environment-summary').textContent = environment.summary;
+}
+
+function renderIndustryAdaptiveValuation(adaptiveValuation) {
+  qs('adaptive-valuation-badge').textContent = adaptiveValuation.methods.length ? `${adaptiveValuation.methods.length}种方法` : '方法不足';
+  qs('adaptive-valuation-summary').textContent = adaptiveValuation.summary || '暂无法生成行业适配估值。';
+  const grid = qs('adaptive-valuation-grid');
+  if (!adaptiveValuation.methods.length) {
+    grid.innerHTML = '<article class="method-card method-card--empty">暂无行业适配估值。</article>';
+    return;
+  }
+
+  grid.innerHTML = adaptiveValuation.methods.map((method) => `
+    <article class="method-card">
+      <h3>${escapeHtml(method.name)}</h3>
+      <p>${escapeHtml(method.reason)}；${escapeHtml(method.assumption)}</p>
+      <table class="method-table">
+        <thead>
+          <tr>
+            <th>年份</th>
+            <th>估值</th>
+            <th>股价</th>
+            <th>假设</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${method.values.map((item) => `
+            <tr>
+              <td>${escapeHtml(item.label)}</td>
+              <td>${formatNumber(item.marketValue)}亿</td>
+              <td>${formatNumber(item.price)}元</td>
+              <td>${escapeHtml(item.assumption || '--')}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </article>
+  `).join('');
+}
+
 function calculateValuation() {
+  const stockNameInput = qs('stock-name').value || '';
+  const stockCodeInput = qs('stock-code').value || '';
   const stockPrice = getInputNumber('stock-price') ?? 0;
   const dividendRate = getInputNumber('dividend-rate') ?? 0;
   const totalShares = getInputNumber('total-shares') ?? 0;
@@ -1838,6 +2448,20 @@ function calculateValuation() {
     return null;
   }
 
+  const valuationContext = getActiveValuationContext(stockCodeInput);
+  const contextIndustryText = `${valuationContext?.industryText || ''},${currentForecastMeta?.industry || ''},${currentForecastMeta?.conceptText || ''}`;
+  const valuationEnvironment = calculateValuationEnvironment({
+    stockName: stockNameInput,
+    stockCode: stockCodeInput,
+    industryText: contextIndustryText,
+    marketTrend: valuationContext?.marketTrend,
+    annualMetrics: valuationContext?.annualMetrics || [],
+    expectedGrowth,
+    currentGrossMargin,
+    previousGrossMargin,
+    debtRatio,
+    dividendRate
+  });
   const discountRate = 0.035 + (debtRatio / 100) * 0.09;
   const totalMarketCap = stockPrice * totalShares;
   const profitPredictions = [netProfit];
@@ -1854,20 +2478,51 @@ function calculateValuation() {
   const grossMarginDiff = (currentGrossMargin - previousGrossMargin) / 100;
   const debtAdjustment = clamp(1 + (0.5 - debtRatio / 100), 0.6, 1.4);
   const buyingCoefficient = debtAdjustment * (1 + dividendRate / 100) * (1 + grossMarginDiff);
-  const intrinsicValue = tenYearTotalProfit * buyingCoefficient;
+  const rawIntrinsicValue = tenYearTotalProfit * buyingCoefficient;
+  const intrinsicValue = rawIntrinsicValue * valuationEnvironment.valuationMultiplier;
   const intrinsicSellValue = intrinsicValue * profitTaking;
   const buyPoints = Array.from({ length: 5 }, (_, index) => intrinsicValue * Math.pow(0.9, index + 1));
   const finalBuyPoint = intrinsicValue * Math.pow(0.9, 9);
-  const reasonablePE = (1 / (discountRate / 2)) * 0.8;
+  const rawReasonablePE = (1 / (discountRate / 2)) * 0.8;
+  const reasonablePE = clamp(
+    rawReasonablePE * valuationEnvironment.peMultipleFactor,
+    valuationEnvironment.profile.peMin ?? 8,
+    valuationEnvironment.profile.peMax ?? 45
+  ) ?? rawReasonablePE;
   const peSellValue = reasonablePE * profitPredictions[2];
   const normalizedFcf = profitPredictions[2] + dAndA - capex;
   const fcfBasedValuationUsable = normalizedFcf > 0;
-  const totalSurplusValue = fcfBasedValuationUsable ? normalizedFcf / discountRate : null;
-  const surplusDenominator = discountRate - perpetualGrowth / 100;
+  const environmentAdjustedDiscountRate = discountRate + valuationEnvironment.riskPremium;
+  const totalSurplusValue = fcfBasedValuationUsable ? normalizedFcf / environmentAdjustedDiscountRate * valuationEnvironment.cashFlowMultiplier : null;
+  const terminalGrowthForValuation = Math.min(perpetualGrowth / 100, getTerminalGrowthCap(valuationEnvironment.profile));
+  const surplusDenominator = discountRate - terminalGrowthForValuation;
   const surplusSellValue = fcfBasedValuationUsable && surplusDenominator > 0.001
-    ? normalizedFcf / surplusDenominator
+    ? normalizedFcf / Math.max(surplusDenominator + valuationEnvironment.riskPremium, 0.001) * valuationEnvironment.cashFlowMultiplier
     : null;
-  const comprehensiveSellValue = averagePositive([intrinsicSellValue, peSellValue, surplusSellValue]);
+  const forecastMeta = getForecastDisplayMeta();
+  const adaptiveValuation = calculateIndustryAdaptiveValuation({
+    profitPredictions,
+    forecastMeta,
+    totalShares,
+    totalMarketCap,
+    discountRate,
+    perpetualGrowth,
+    expectedGrowth,
+    dividendRate,
+    dAndA,
+    capex,
+    valuationEnvironment,
+    context: valuationContext
+  });
+  const adaptiveSellPremium = clamp(0.1 + valuationEnvironment.environmentScore * 0.002, 0.12, 0.28) ?? 0.16;
+  const adaptiveSellValue = adaptiveValuation.fairValue ? adaptiveValuation.fairValue * (1 + adaptiveSellPremium) : null;
+  const comprehensiveSellValue = combineSellValuesWithEnvironment({
+    intrinsicSellValue,
+    peSellValue,
+    surplusSellValue,
+    adaptiveSellValue,
+    valuationEnvironment
+  });
   const comprehensiveMarketStatus = getMarketStatus(comprehensiveSellValue, totalMarketCap);
   const investmentBankValuation = calculateInvestmentBankValuation({
     profitPredictions,
@@ -1881,7 +2536,8 @@ function calculateValuation() {
     dAndA,
     capex,
     reasonablePE,
-    totalMarketCap
+    totalMarketCap,
+    valuationEnvironment
   });
 
   setTextValue('discount-rate', discountRate * 100, 2, '%');
@@ -1905,6 +2561,8 @@ function calculateValuation() {
   setTextValue('ib-target-pe', investmentBankValuation.targetPE, 2, 'x');
   setTextValue('ib-safety-margin', ratioToPercent(investmentBankValuation.safetyMargin), 2, '%');
   setTextValue('ib-sell-premium', ratioToPercent(investmentBankValuation.sellPremium), 2, '%');
+  renderValuationEnvironment(valuationEnvironment);
+  renderIndustryAdaptiveValuation(adaptiveValuation);
   const surplusFallbackText = fcfBasedValuationUsable
     ? '对应股价 -- 元/股'
     : 'N+2自由现金流为负，暂不纳入综合';
@@ -1926,7 +2584,6 @@ function calculateValuation() {
   setTextValue('final-buy-point', finalBuyPoint);
   const buyPointPrices = buyPoints.map((point, index) => setPointPrice(`buy-point-${index + 1}-price`, point, totalShares));
   const finalBuyPointPrice = setPointPrice('final-buy-point-price', finalBuyPoint, totalShares);
-  const forecastMeta = getForecastDisplayMeta();
   const threeYearProfitPredictions = forecastMeta.forecastItems?.length >= 3
     ? forecastMeta.forecastItems.slice(0, 3).map((item) => item.netProfit)
     : profitPredictions.slice(0, 3);
@@ -1958,6 +2615,10 @@ function calculateValuation() {
       buyingCoefficient,
       normalizedFcf,
       fcfBasedValuationUsable,
+      rawIntrinsicValue,
+      rawReasonablePE,
+      environmentAdjustedDiscountRate,
+      terminalGrowthForValuation,
       intrinsicValue,
       totalSurplusValue,
       reasonablePE,
@@ -1966,9 +2627,13 @@ function calculateValuation() {
       peSellValue,
       surplusSellValue,
       comprehensiveSellValue,
+      adaptiveSellValue,
+      adaptiveSellPremium,
       comprehensiveMarketStatus,
       ...sellPrices,
+      valuationEnvironment,
       investmentBankValuation,
+      adaptiveValuation,
       ...investmentBankPrices,
       buyPoints,
       buyPointPrices,
@@ -2102,6 +2767,15 @@ function showHistoryDetail(recordId) {
     ['N+2自由现金流', `${formatNumber(record.outputs.normalizedFcf)} 亿元`],
     ['总体盈余口径', record.outputs.fcfBasedValuationUsable ? '已纳入综合卖点' : '自由现金流为负，未纳入综合卖点'],
     ['股息率TTM', `${formatNumber(record.inputs.dividendRate)}%`]
+  ])}
+      ${detailSection('市场行业环境', [
+    ['行业类型', record.outputs.valuationEnvironment?.profile?.label || '未记录'],
+    ['环境判断', record.outputs.valuationEnvironment?.environmentLabel || '未记录'],
+    ['估值环境系数', formatNumber(record.outputs.valuationEnvironment?.valuationMultiplier, 2)],
+    ['行业景气', formatNumber(record.outputs.valuationEnvironment?.industryCycleScore, 0)],
+    ['市场趋势', formatNumber(record.outputs.valuationEnvironment?.marketScore, 0)],
+    ['需求供需', formatNumber(record.outputs.valuationEnvironment?.supplyDemandScore, 0)],
+    ['适配方法', record.outputs.adaptiveValuation?.methods?.map((method) => method.name).join('、') || '未记录']
   ])}
       ${detailSection('输入参数', [
     ['负债率', `${formatNumber(record.inputs.debtRatio)}%`],
