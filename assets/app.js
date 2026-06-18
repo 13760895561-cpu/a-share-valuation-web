@@ -330,6 +330,7 @@ function setProfitForecastSource(meta) {
   const element = qs('profit-forecast-source');
   if (!element) return;
   element.textContent = meta?.label ? `预测来源：${meta.label}` : '预测来源 --';
+  element.title = meta?.detail || '';
 }
 
 function normalizeStockKeyword(value) {
@@ -422,21 +423,267 @@ function getAnnualFinancialMetrics(row) {
   };
 }
 
-function estimateIndustryBaseGrowth(industryText) {
+function getIndustryProfile(industryText) {
   const text = industryText || '';
-  if (/半导体|芯片|集成电路|人工智能|AI|软件|计算机|通信|电子|机器人|新能源|电池|光伏|军工|高端装备|创新药|生物医药/.test(text)) {
-    return 14;
+  if (/半导体|芯片|集成电路|人工智能|AI|算力|软件|计算机|通信|电子|机器人|新能源|电池|光伏|军工|高端装备|创新药|生物医药|低空经济|卫星|数据中心/.test(text)) {
+    return {
+      label: '高成长科技/创新产业',
+      baseGrowth: 15,
+      hotspotScore: 82,
+      targetMargin: 8,
+      marketAnchorMultiple: 24,
+      growthCap: 45,
+      stage: 'growth'
+    };
   }
-  if (/医药|医疗|消费电子|汽车|机械|化工|新材料|传媒|互联网|游戏/.test(text)) {
-    return 10;
+  if (/医药|医疗|消费电子|汽车|机械|化工|新材料|传媒|互联网|游戏|智能终端|智能硬件|MR|AR|VR|折叠屏/.test(text)) {
+    return {
+      label: '成长制造/消费科技',
+      baseGrowth: 11,
+      hotspotScore: 68,
+      targetMargin: 6,
+      marketAnchorMultiple: 22,
+      growthCap: 38,
+      stage: 'growth'
+    };
   }
-  if (/食品|饮料|白酒|家电|家居|农业|纺织|服装|零售|物流/.test(text)) {
-    return 6;
+  if (/食品|饮料|白酒|家电|家居|农业|纺织|服装|零售|物流|快递/.test(text)) {
+    return {
+      label: '消费/稳定经营行业',
+      baseGrowth: 6,
+      hotspotScore: 48,
+      targetMargin: 5,
+      marketAnchorMultiple: 18,
+      growthCap: 24,
+      stage: 'stable'
+    };
   }
   if (/房地产|房屋|物业|建筑|水泥|钢铁|煤炭|石油|银行|保险|证券|公路|铁路|港口|机场|电力|燃气|水务|环保/.test(text)) {
-    return 3;
+    return {
+      label: '传统周期/金融公用行业',
+      baseGrowth: 3,
+      hotspotScore: 35,
+      targetMargin: 3,
+      marketAnchorMultiple: 12,
+      growthCap: 16,
+      stage: 'traditional'
+    };
   }
-  return 7;
+  return {
+    label: '一般制造/综合行业',
+    baseGrowth: 8,
+    hotspotScore: 55,
+    targetMargin: 4,
+    marketAnchorMultiple: 18,
+    growthCap: 30,
+    stage: 'balanced'
+  };
+}
+
+function estimateIndustryBaseGrowth(industryText) {
+  return getIndustryProfile(industryText).baseGrowth;
+}
+
+function calculateMarketReturn(closes, days) {
+  if (!Array.isArray(closes) || closes.length <= days) return null;
+  const latest = closes[closes.length - 1];
+  const base = closes[closes.length - 1 - days];
+  return calculateGrowthRate(latest, base);
+}
+
+function parseEastmoneyKline(row) {
+  const parts = String(row || '').split(',');
+  return {
+    date: parts[0],
+    open: toNumber(parts[1]),
+    close: toNumber(parts[2]),
+    high: toNumber(parts[3]),
+    low: toNumber(parts[4]),
+    volume: toNumber(parts[5]),
+    amount: toNumber(parts[6]),
+    turnoverRate: toNumber(parts[10])
+  };
+}
+
+async function fetchStockTrendContext(code, quote) {
+  const secid = `${getStockMarketPrefix(code)}.${code}`;
+  const response = await fetchJson('https://push2his.eastmoney.com/api/qt/stock/kline/get', {
+    secid,
+    klt: '101',
+    fqt: '1',
+    lmt: '520',
+    end: '20500101',
+    fields1: 'f1,f2,f3,f4,f5,f6',
+    fields2: 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'
+  }, 15000, 1);
+  const rows = (response?.data?.klines || []).map(parseEastmoneyKline).filter((item) => item.close !== null);
+  if (rows.length < 120) return null;
+
+  const closes = rows.map((item) => item.close);
+  const latestClose = quote?.price || closes[closes.length - 1];
+  const ma60 = average(closes.slice(-60));
+  const ma120 = average(closes.slice(-120));
+  const ma250 = average(closes.slice(-250));
+  const return120 = calculateMarketReturn(closes, 120);
+  const return250 = calculateMarketReturn(closes, 250);
+  const return500 = calculateMarketReturn(closes, Math.min(500, closes.length - 1));
+  const high = Math.max(...closes);
+  const low = Math.min(...closes);
+  const drawdownFromHigh = high ? (latestClose / high - 1) * 100 : null;
+  const priceToMa250 = ma250 ? (latestClose / ma250 - 1) * 100 : null;
+  const recentTurnover = average(rows.slice(-60).map((item) => item.turnoverRate).filter((value) => value !== null));
+  const medianPrice250 = median(closes.slice(-250));
+  const medianPrice500 = median(closes.slice(-Math.min(500, closes.length)));
+  const totalShares = quote?.totalShares;
+  const medianMarketCap250 = medianPrice250 && totalShares ? medianPrice250 * totalShares : null;
+  const medianMarketCap500 = medianPrice500 && totalShares ? medianPrice500 * totalShares : null;
+  const trendScore = clamp(
+    50
+      + (return250 ?? 0) * 0.18
+      + (return500 ?? 0) * 0.08
+      + (priceToMa250 ?? 0) * 0.45
+      + Math.max((drawdownFromHigh ?? -30) + 30, 0) * 0.25
+      + Math.min(recentTurnover ?? 0, 8) * 1.4,
+    20,
+    95
+  ) ?? 50;
+  const trendLabel = trendScore >= 75
+    ? '长期强势'
+    : trendScore >= 62
+      ? '中长期偏强'
+      : trendScore >= 45
+        ? '中性震荡'
+        : '中长期偏弱';
+
+  return {
+    tradingDays: rows.length,
+    latestClose,
+    ma60,
+    ma120,
+    ma250,
+    return120,
+    return250,
+    return500,
+    drawdownFromHigh,
+    priceToMa250,
+    recentTurnover,
+    medianMarketCap250,
+    medianMarketCap500,
+    high,
+    low,
+    trendScore,
+    trendLabel
+  };
+}
+
+function estimateMarketForecastAdjustment({
+  industryProfile,
+  marketTrend,
+  recentRevenueGrowth,
+  revenueCagr,
+  recentProfitGrowth,
+  marginTrend,
+  debtRatio,
+  dAndA,
+  capex,
+  isLossMaking
+}) {
+  const trendScore = marketTrend?.trendScore ?? 50;
+  const revenueSignal = average([
+    recentRevenueGrowth,
+    revenueCagr
+  ].filter((value) => Number.isFinite(value))) ?? 0;
+  const operationScore = clamp(
+    50
+      + revenueSignal * 0.65
+      + (recentProfitGrowth ?? 0) * 0.18
+      + (marginTrend ?? 0) * 2
+      - Math.max((debtRatio ?? 0) - 55, 0) * 0.5
+      - (dAndA !== null && capex !== null && capex > dAndA * 1.8 ? 8 : 0),
+    20,
+    90
+  ) ?? 50;
+  const combinedScore = clamp(
+    trendScore * 0.32
+      + industryProfile.hotspotScore * 0.24
+      + operationScore * 0.34
+      + (isLossMaking ? -5 : 5),
+    20,
+    95
+  ) ?? 50;
+  const growthLift = combinedScore >= 78
+    ? 10
+    : combinedScore >= 68
+      ? 7
+      : combinedScore >= 58
+        ? 3
+        : combinedScore < 42
+          ? -4
+          : 0;
+  const marginMultiplier = combinedScore >= 78
+    ? 1.32
+    : combinedScore >= 68
+      ? 1.2
+      : combinedScore >= 58
+        ? 1.08
+        : combinedScore < 42
+          ? 0.9
+          : 1;
+  const supportLabel = combinedScore >= 78
+    ? '市场与行业确认强'
+    : combinedScore >= 68
+      ? '市场与行业确认较强'
+      : combinedScore >= 58
+        ? '市场与行业确认中性偏强'
+        : combinedScore < 42
+          ? '市场确认偏弱'
+          : '市场确认中性';
+
+  return {
+    combinedScore,
+    operationScore,
+    growthLift,
+    marginMultiplier,
+    supportLabel
+  };
+}
+
+function applyMarketImpliedForecastLift(forecastItems, marketTrend, industryProfile, marketAdjustment, latestProfit, quoteMarketCap) {
+  if (!forecastItems.length) return forecastItems;
+  const thirdYearProfit = forecastItems[2]?.netProfit;
+  if (!thirdYearProfit || thirdYearProfit <= 0 || marketAdjustment.combinedScore < 58) return forecastItems;
+
+  const historicalAnchor = marketTrend ? averagePositive([
+    marketTrend.medianMarketCap250,
+    marketTrend.medianMarketCap500,
+    marketTrend.latestClose && marketTrend.latestClose > marketTrend.ma250 ? marketTrend.medianMarketCap250 * 1.08 : null
+  ]) : null;
+  const marketAnchor = historicalAnchor || (quoteMarketCap ? quoteMarketCap * 0.85 : null);
+  if (!marketAnchor) return forecastItems;
+
+  const anchorMultiple = clamp(
+    industryProfile.marketAnchorMultiple
+      - Math.max(marketAdjustment.combinedScore - 68, 0) * 0.08
+      - Math.max((marketTrend?.priceToMa250 ?? 0), 0) * 0.03,
+    14,
+    industryProfile.marketAnchorMultiple
+  ) ?? industryProfile.marketAnchorMultiple;
+  const impliedProfit = marketAnchor / anchorMultiple;
+  if (!impliedProfit || impliedProfit <= thirdYearProfit) return forecastItems;
+
+  const liftWeight = clamp((marketAdjustment.combinedScore - 55) / 70, 0.08, 0.38) ?? 0.12;
+  const targetThirdYearProfit = thirdYearProfit * (1 - liftWeight) + impliedProfit * liftWeight;
+  const profitScale = clamp(
+    targetThirdYearProfit / thirdYearProfit,
+    1,
+    industryProfile.stage === 'traditional' ? 1.35 : latestProfit > 0 ? 2.2 : 3
+  ) ?? 1;
+
+  return forecastItems.map((item, index) => ({
+    ...item,
+    netProfit: item.netProfit * (1 + (profitScale - 1) * (0.55 + index * 0.22)),
+    marketLift: profitScale
+  }));
 }
 
 function estimateInvestmentBankProfitForecast({
@@ -445,13 +692,15 @@ function estimateInvestmentBankProfitForecast({
   industryText,
   debtRatio,
   dAndA,
-  capex
+  capex,
+  marketTrend,
+  quote
 }) {
   const annualMetrics = annualIncomeRows
     .map(getAnnualFinancialMetrics)
-    .filter((item) => item.year && item.revenue && item.profit !== null);
+    .filter((item) => item.year && item.revenue);
   const latest = annualMetrics[0];
-  if (!latest || latest.profit <= 0) {
+  if (!latest || !latest.revenue) {
     return null;
   }
 
@@ -461,15 +710,33 @@ function estimateInvestmentBankProfitForecast({
   const revenueCagr = calculateCagr(latest.revenue, threeYearsAgo.revenue, annualMetrics.indexOf(threeYearsAgo));
   const recentProfitGrowth = calculateGrowthRate(latest.profit, previous.profit);
   const profitCagr = calculateCagr(latest.profit, threeYearsAgo.profit, annualMetrics.indexOf(threeYearsAgo));
-  const industryGrowth = estimateIndustryBaseGrowth(industryText);
+  const industryProfile = getIndustryProfile(industryText);
+  const industryGrowth = industryProfile.baseGrowth;
+  const isLossMaking = (latestAnnualProfit ?? latest.profit ?? 0) <= 0;
+  const marginTrend = latest.netMargin !== null && previous.netMargin !== null ? latest.netMargin - previous.netMargin : null;
+  const marketAdjustment = estimateMarketForecastAdjustment({
+    industryProfile,
+    marketTrend,
+    recentRevenueGrowth,
+    revenueCagr,
+    recentProfitGrowth,
+    marginTrend,
+    debtRatio,
+    dAndA,
+    capex,
+    isLossMaking
+  });
+  const profitRecovered = Number.isFinite(recentProfitGrowth) && recentProfitGrowth > 20 && Number.isFinite(recentRevenueGrowth) && recentRevenueGrowth > 0;
+  const businessUnderPressure = Number.isFinite(recentProfitGrowth) && recentProfitGrowth < -20 && Number.isFinite(recentRevenueGrowth) && recentRevenueGrowth < 0;
   const revenueGrowthBase = clamp(
     average([
       recentRevenueGrowth,
       revenueCagr,
-      industryGrowth
+      industryGrowth,
+      industryGrowth + marketAdjustment.growthLift
     ].filter((value) => Number.isFinite(value))),
     -8,
-    30
+    industryProfile.growthCap
   ) ?? industryGrowth;
   const positiveMargins = annualMetrics
     .slice(0, 5)
@@ -477,44 +744,72 @@ function estimateInvestmentBankProfitForecast({
     .filter((value) => Number.isFinite(value) && value > 0);
   const averageNetMargin = average(positiveMargins);
   const medianNetMargin = median(positiveMargins);
-  const latestNetMargin = latest.netMargin ?? averageNetMargin ?? 3;
+  const latestNetMargin = latest.netMargin ?? averageNetMargin ?? (isLossMaking ? -3 : 3);
+  const normalizedTargetMargin = Math.max(
+    industryProfile.targetMargin,
+    averageNetMargin ?? 0,
+    medianNetMargin ?? 0,
+    isLossMaking ? 2 : latestNetMargin
+  ) * marketAdjustment.marginMultiplier;
+  const shouldLeanOnMarketMargin = !isLossMaking
+    && industryProfile.stage === 'growth'
+    && marketAdjustment.combinedScore >= 62
+    && (profitRecovered || (recentRevenueGrowth ?? 0) > 10);
+  const targetMarginRaw = isLossMaking
+    ? latestNetMargin * 0.25
+      + (averageNetMargin ?? normalizedTargetMargin) * 0.2
+      + (medianNetMargin ?? normalizedTargetMargin) * 0.15
+      + normalizedTargetMargin * 0.4
+    : shouldLeanOnMarketMargin
+      ? latestNetMargin * 0.35
+        + (averageNetMargin ?? normalizedTargetMargin) * 0.18
+        + (medianNetMargin ?? normalizedTargetMargin) * 0.14
+        + normalizedTargetMargin * 0.33
+      : latestNetMargin * 0.5
+        + (averageNetMargin ?? normalizedTargetMargin) * 0.2
+        + (medianNetMargin ?? normalizedTargetMargin) * 0.15
+        + normalizedTargetMargin * 0.15;
   const targetNetMargin = clamp(
-    latestNetMargin * 0.55 + (averageNetMargin ?? latestNetMargin) * 0.3 + (medianNetMargin ?? latestNetMargin) * 0.15,
-    Math.max(latestNetMargin * 0.75, 0.5),
-    Math.max(latestNetMargin, averageNetMargin ?? latestNetMargin, medianNetMargin ?? latestNetMargin) * 1.2
-  ) ?? latestNetMargin;
-  const profitRecovered = Number.isFinite(recentProfitGrowth) && recentProfitGrowth > 20 && Number.isFinite(recentRevenueGrowth) && recentRevenueGrowth > 0;
-  const businessUnderPressure = Number.isFinite(recentProfitGrowth) && recentProfitGrowth < -20 && Number.isFinite(recentRevenueGrowth) && recentRevenueGrowth < 0;
+    targetMarginRaw,
+    isLossMaking ? 1.2 : Math.max(latestNetMargin * 0.75, 0.5),
+    Math.max(normalizedTargetMargin, latestNetMargin, averageNetMargin ?? latestNetMargin, medianNetMargin ?? latestNetMargin) * 1.25
+  ) ?? normalizedTargetMargin;
   const highCapexPressure = dAndA !== null && capex !== null && capex > dAndA * 1.6;
   const debtDrag = debtRatio !== null && debtRatio > 60 ? -3 : 0;
   const capexDrag = highCapexPressure ? -2 : 0;
   let profitGrowthBase;
 
-  if (profitRecovered) {
-    profitGrowthBase = clamp(revenueGrowthBase * 0.75 + 8 + debtDrag + capexDrag, 6, 28);
+  if (isLossMaking) {
+    profitGrowthBase = clamp(revenueGrowthBase * 0.9 + marketAdjustment.growthLift + debtDrag + capexDrag, 8, industryProfile.growthCap);
+  } else if (profitRecovered) {
+    profitGrowthBase = clamp(revenueGrowthBase * 0.75 + 8 + marketAdjustment.growthLift + debtDrag + capexDrag, 6, industryProfile.growthCap);
   } else if (businessUnderPressure) {
-    profitGrowthBase = clamp((profitCagr ?? recentProfitGrowth ?? -5) * 0.25 + revenueGrowthBase * 0.35 + debtDrag, -8, 8);
+    profitGrowthBase = clamp((profitCagr ?? recentProfitGrowth ?? -5) * 0.2 + revenueGrowthBase * 0.4 + marketAdjustment.growthLift + debtDrag, -8, 12);
   } else {
-    profitGrowthBase = clamp(revenueGrowthBase * 0.65 + (profitCagr ?? 0) * 0.15 + debtDrag + capexDrag, -5, 22);
+    profitGrowthBase = clamp(revenueGrowthBase * 0.65 + (profitCagr ?? 0) * 0.15 + marketAdjustment.growthLift + debtDrag + capexDrag, -5, Math.min(industryProfile.growthCap, 32));
   }
 
   const firstYearGrowth = profitGrowthBase;
-  const secondYearGrowth = clamp(profitGrowthBase * 0.85, -6, 24);
-  const thirdYearGrowth = clamp(profitGrowthBase * 0.7, -5, 20);
+  const secondYearGrowth = clamp(profitGrowthBase * 0.85, -6, Math.min(industryProfile.growthCap, 34));
+  const thirdYearGrowth = clamp(profitGrowthBase * 0.7, -5, Math.min(industryProfile.growthCap, 28));
   const revenueGrowthPath = [
     revenueGrowthBase,
-    clamp(revenueGrowthBase * 0.85, -6, 24),
-    clamp(revenueGrowthBase * 0.7, -5, 20)
+    clamp(revenueGrowthBase * 0.85, -6, Math.min(industryProfile.growthCap, 32)),
+    clamp(revenueGrowthBase * 0.7, -5, Math.min(industryProfile.growthCap, 26))
   ];
-  const marginPath = [0.45, 0.7, 0.9].map((weight) => latestNetMargin + (targetNetMargin - latestNetMargin) * weight);
-  const forecastItems = [];
+  const marginPath = isLossMaking
+    ? [0.45, 0.75, 1].map((weight) => Math.max(targetNetMargin * weight, 0.3))
+    : [0.45, 0.7, 0.9].map((weight) => latestNetMargin + (targetNetMargin - latestNetMargin) * weight);
+  let forecastItems = [];
   let revenueBase = latest.revenue;
-  let profitBase = latestAnnualProfit ?? latest.profit;
+  let profitBase = latestAnnualProfit ?? latest.profit ?? 0;
 
   for (let index = 0; index < 3; index += 1) {
     revenueBase *= 1 + revenueGrowthPath[index] / 100;
     const marginBasedProfit = revenueBase * (marginPath[index] / 100);
-    const trendBasedProfit = profitBase * (1 + [firstYearGrowth, secondYearGrowth, thirdYearGrowth][index] / 100);
+    const trendBasedProfit = isLossMaking && profitBase <= 0
+      ? marginBasedProfit
+      : profitBase * (1 + [firstYearGrowth, secondYearGrowth, thirdYearGrowth][index] / 100);
     const netProfit = weightedAverage([
       { value: marginBasedProfit, weight: 0.55 },
       { value: trendBasedProfit, weight: 0.45 }
@@ -528,6 +823,15 @@ function estimateInvestmentBankProfitForecast({
     profitBase = netProfit;
   }
 
+  forecastItems = applyMarketImpliedForecastLift(
+    forecastItems,
+    marketTrend,
+    industryProfile,
+    marketAdjustment,
+    latestAnnualProfit ?? latest.profit ?? 0,
+    quote?.marketCap
+  );
+
   const selectedNetProfit = forecastItems[0]?.netProfit ?? latest.profit;
   const expectedGrowth = forecastItems.length >= 3 && selectedNetProfit > 0
     ? (Math.pow(forecastItems[2].netProfit / selectedNetProfit, 1 / 2) - 1) * 100
@@ -536,11 +840,17 @@ function estimateInvestmentBankProfitForecast({
 
   return {
     selectedNetProfit,
-    expectedGrowth: clamp(expectedGrowth, -8, 30) ?? 0,
+    expectedGrowth: clamp(expectedGrowth, -8, industryProfile.growthCap) ?? 0,
     forecastItems,
     modelType,
     revenueGrowthBase,
-    targetNetMargin
+    targetNetMargin,
+    industryLabel: industryProfile.label,
+    marketScore: marketAdjustment.combinedScore,
+    marketSupportLabel: marketAdjustment.supportLabel,
+    marketTrendLabel: marketTrend?.trendLabel || '走势数据不足',
+    isLossMaking,
+    peUsable: !isLossMaking
   };
 }
 
@@ -1085,9 +1395,10 @@ async function autoFillByStock() {
     const historicalGrowth = calcHistoricalProfitGrowth(annualIncomeRows);
     const fallbackCapex = average(annualCashFlowRows.map((row) => toYi(row.CONSTRUCT_LONG_ASSET)).filter((value) => value !== null));
 
-    const [cashAverages, forecast] = await Promise.all([
+    const [cashAverages, forecast, marketTrend] = await Promise.all([
       fetchTonghuashunCashAverages(code).catch(() => null),
-      fetchProfitForecast(code, quote.totalShares, latestAnnualProfit).catch(() => null)
+      fetchProfitForecast(code, quote.totalShares, latestAnnualProfit).catch(() => null),
+      fetchStockTrendContext(code, quote).catch(() => null)
     ]);
 
     const industryText = `${forecast?.industry || ''},${forecast?.conceptText || ''},${quote.industry || ''},${quote.conceptText || ''}`;
@@ -1103,32 +1414,45 @@ async function autoFillByStock() {
     const dAndA = cashAverages?.dAndA;
     const capex = cashAverages?.capex ?? fallbackCapex;
     const perpetualGrowth = estimatePerpetualGrowth(industryText);
-    const bankerForecast = forecast ? null : estimateInvestmentBankProfitForecast({
+    const brokerForecastUsable = forecast && forecast.selectedNetProfit > 0;
+    const bankerForecast = brokerForecastUsable ? null : estimateInvestmentBankProfitForecast({
       annualIncomeRows,
       latestAnnualProfit,
       industryText,
       debtRatio,
       dAndA,
-      capex
+      capex,
+      marketTrend,
+      quote
     });
-    const forecastMeta = forecast
+    const forecastMeta = brokerForecastUsable
       ? {
         source: 'broker',
         label: '券商盈利预测',
         detail: `券商预测机构数${forecast.institutionCount}家`,
         forecastItems: forecast.forecastItems
       }
+      : forecast
+        ? {
+          source: bankerForecast ? 'broker-loss-investment-bank' : 'broker-loss',
+          label: bankerForecast ? '券商预测未转正，投行方式非PE估值' : '券商盈利预测（亏损期）',
+          detail: bankerForecast
+            ? `券商三年预测仍未转正，${bankerForecast.industryLabel}，${bankerForecast.marketSupportLabel}，按收入和正常化利润率估值`
+            : '券商三年预测仍未转正，且投行非PE估值输入不足',
+          forecastItems: bankerForecast?.forecastItems || forecast.forecastItems,
+          brokerForecastItems: forecast.forecastItems
+        }
       : {
         source: bankerForecast ? 'investment-bank' : 'historical',
         label: bankerForecast ? '投行方式简易盈利预测' : '历史数据兜底预测',
         detail: bankerForecast
-          ? `${bankerForecast.modelType}，收入趋势${formatNumber(bankerForecast.revenueGrowthBase)}%，目标净利率${formatNumber(bankerForecast.targetNetMargin)}%`
+          ? `${bankerForecast.modelType}，${bankerForecast.industryLabel}，${bankerForecast.marketSupportLabel}，收入趋势${formatNumber(bankerForecast.revenueGrowthBase)}%，目标净利率${formatNumber(bankerForecast.targetNetMargin)}%`
           : '投行模型输入不足，退回历史年报增速',
         forecastItems: bankerForecast?.forecastItems || []
       };
     currentForecastMeta = forecastMeta;
-    const expectedGrowth = forecast?.expectedGrowth ?? bankerForecast?.expectedGrowth ?? historicalGrowth;
-    const netProfit = forecast?.selectedNetProfit ?? bankerForecast?.selectedNetProfit ?? latestAnnualProfit;
+    const expectedGrowth = brokerForecastUsable ? forecast.expectedGrowth : bankerForecast?.expectedGrowth ?? historicalGrowth;
+    const netProfit = brokerForecastUsable ? forecast.selectedNetProfit : bankerForecast?.selectedNetProfit ?? latestAnnualProfit;
     const notes = [];
 
     qs('stock-search').value = `${quote.name} ${code}`;
@@ -1157,8 +1481,17 @@ async function autoFillByStock() {
       notes.push(bankerForecast
         ? `券商盈利预测未取到，启用${forecastMeta.label}：${forecastMeta.detail}`
         : '券商盈利预测未取到，投行模型输入不足，使用历史年报增速和最近年报净利润兜底');
+    } else if (!brokerForecastUsable) {
+      notes.push(bankerForecast
+        ? `券商预测机构数${forecast.institutionCount}家，但三年预测仍未形成可用正利润，PE口径不作为核心估值，启用${forecastMeta.label}`
+        : `券商预测机构数${forecast.institutionCount}家，但三年预测仍未形成可用正利润，暂无法形成正利润估值`);
     } else {
       notes.push(`券商预测机构数${forecast.institutionCount}家，${forecast.institutionCount > 10 ? '高关注取三年预测低值' : '低关注取三年预测高值'}`);
+    }
+    if (marketTrend) {
+      notes.push(`近${marketTrend.tradingDays}个交易日走势为${marketTrend.trendLabel}，较250日均线${formatNumber(marketTrend.priceToMa250)}%`);
+    } else if (!forecast) {
+      notes.push('中长期股价走势未取到，投行简易预测使用当前总市值作为弱市场确认因子');
     }
     const dAndANote = describeCashEstimate('D&A', dAndA, {
       yearCount: cashAverages?.dAndAYearCount,
