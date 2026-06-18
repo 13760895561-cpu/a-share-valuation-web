@@ -244,6 +244,19 @@ function setTextValue(id, value, digits = 2, suffix = '') {
   qs(id).textContent = number === null ? '--' : `${formatNumber(number, digits)}${suffix}`;
 }
 
+function calcPointPrice(marketValue, totalShares) {
+  const value = toNumber(marketValue);
+  const shares = toNumber(totalShares);
+  if (value === null || !shares || shares <= 0) return null;
+  return value / shares;
+}
+
+function setPointPrice(id, marketValue, totalShares) {
+  const price = calcPointPrice(marketValue, totalShares);
+  qs(id).textContent = price === null ? '对应股价 -- 元/股' : `对应股价 ${formatNumber(price, 2)} 元/股`;
+  return price;
+}
+
 function normalizeStockKeyword(value) {
   const trimmed = value.trim();
   const codeMatch = trimmed.match(/(?:sh|sz|bj)?\s*(\d{6})|(\d{6})\s*(?:\.|\s)*(?:sh|sz|bj)/i);
@@ -996,8 +1009,17 @@ function calculateValuation() {
   setTextValue('surplus-sell-value', surplusSellValue);
   setTextValue('comprehensive-sell-value', comprehensiveSellValue);
   setTextValue('summary-sell-value', comprehensiveSellValue);
+  const sellPrices = {
+    intrinsicSellPrice: setPointPrice('intrinsic-sell-price', intrinsicSellValue, totalShares),
+    peSellPrice: setPointPrice('pe-sell-price', peSellValue, totalShares),
+    surplusSellPrice: setPointPrice('surplus-sell-price', surplusSellValue, totalShares),
+    comprehensiveSellPrice: setPointPrice('comprehensive-sell-price', comprehensiveSellValue, totalShares)
+  };
+  setPointPrice('summary-sell-price', comprehensiveSellValue, totalShares);
   buyPoints.forEach((point, index) => setTextValue(`buy-point-${index + 1}`, point));
   setTextValue('final-buy-point', finalBuyPoint);
+  const buyPointPrices = buyPoints.map((point, index) => setPointPrice(`buy-point-${index + 1}-price`, point, totalShares));
+  const finalBuyPointPrice = setPointPrice('final-buy-point-price', finalBuyPoint, totalShares);
   renderProfitChart(profitPredictions);
   qs('save-btn').disabled = false;
 
@@ -1031,8 +1053,11 @@ function calculateValuation() {
       peSellValue,
       surplusSellValue,
       comprehensiveSellValue,
+      ...sellPrices,
       buyPoints,
+      buyPointPrices,
       finalBuyPoint,
+      finalBuyPointPrice,
       profitPredictions
     }
   };
@@ -1172,6 +1197,18 @@ function showHistoryDetail(recordId) {
     ['PE卖点', `${formatNumber(record.outputs.peSellValue)} 亿元`],
     ['总体盈余卖点', `${formatNumber(record.outputs.surplusSellValue)} 亿元`],
     ['综合卖点', `${formatNumber(record.outputs.comprehensiveSellValue)} 亿元`]
+  ])}
+      ${detailSection('对应股价', [
+    ['内在价值卖点股价', `${formatNumber(record.outputs.intrinsicSellPrice)} 元/股`],
+    ['PE卖点股价', `${formatNumber(record.outputs.peSellPrice)} 元/股`],
+    ['总体盈余卖点股价', `${formatNumber(record.outputs.surplusSellPrice)} 元/股`],
+    ['综合卖点股价', `${formatNumber(record.outputs.comprehensiveSellPrice)} 元/股`],
+    ['加仓点一股价', `${formatNumber(record.outputs.buyPointPrices?.[0])} 元/股`],
+    ['加仓点二股价', `${formatNumber(record.outputs.buyPointPrices?.[1])} 元/股`],
+    ['加仓点三股价', `${formatNumber(record.outputs.buyPointPrices?.[2])} 元/股`],
+    ['加仓点四股价', `${formatNumber(record.outputs.buyPointPrices?.[3])} 元/股`],
+    ['加仓点五股价', `${formatNumber(record.outputs.buyPointPrices?.[4])} 元/股`],
+    ['最后加仓点股价', `${formatNumber(record.outputs.finalBuyPointPrice)} 元/股`]
   ])}
     </div>
     <div class="detail-section" style="margin-top:12px">
