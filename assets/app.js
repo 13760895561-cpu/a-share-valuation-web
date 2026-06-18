@@ -183,6 +183,41 @@ async function fetchJson(url, params = {}, timeoutMs = 15000, retries = 1) {
   throw new Error('数据接口请求失败');
 }
 
+async function fetchText(url, params = {}, timeoutMs = 15000, retries = 1, encoding = 'utf-8') {
+  const query = new URLSearchParams(params);
+  const requestUrl = Object.keys(params).length ? `${url}?${query.toString()}` : url;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(requestUrl, {
+        signal: controller.signal,
+        credentials: 'omit'
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const buffer = await response.arrayBuffer();
+      try {
+        return new TextDecoder(encoding).decode(buffer);
+      } catch {
+        return new TextDecoder('utf-8').decode(buffer);
+      }
+    } catch (error) {
+      const isAbort = error.name === 'AbortError' || /abort|aborted/i.test(error.message || '');
+      if (attempt >= retries) {
+        throw new Error(isAbort ? '文本接口响应超时' : error.message);
+      }
+      await delay(350 * (attempt + 1));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw new Error('文本接口请求失败');
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1069,7 +1104,54 @@ async function fetchDividendRate(code, price) {
   return null;
 }
 
-async function fetchProfitForecast(code, totalShares, latestAnnualProfit) {
+function buildEastmoneyF10Code(code) {
+  const normalizedCode = String(code || '').replace(/\D/g, '');
+  return /^(600|601|603|605|688|689)\d{3}$/.test(normalizedCode)
+    ? `SH${normalizedCode}`
+    : `SZ${normalizedCode}`;
+}
+
+function buildProfitForecastResult({
+  forecastItems,
+  institutionCount = 0,
+  latestAnnualProfit,
+  industry = '',
+  conceptText = '',
+  source = 'broker',
+  detail = ''
+}) {
+  const validItems = (forecastItems || [])
+    .filter((item) => Number.isFinite(item.netProfit) && item.netProfit !== 0)
+    .sort((a, b) => (a.year || 0) - (b.year || 0));
+
+  if (!validItems.length) return null;
+
+  const selectedNetProfit = institutionCount > 10
+    ? Math.min(...validItems.map((item) => item.netProfit))
+    : Math.max(...validItems.map((item) => item.netProfit));
+
+  const yoyGrowth = [];
+  let previousProfit = latestAnnualProfit;
+  validItems.forEach((item) => {
+    if (previousProfit && item.netProfit && previousProfit > 0) {
+      yoyGrowth.push((item.netProfit / previousProfit - 1) * 100);
+    }
+    previousProfit = item.netProfit;
+  });
+
+  return {
+    institutionCount,
+    selectedNetProfit,
+    expectedGrowth: average(yoyGrowth),
+    industry,
+    conceptText,
+    forecastItems: validItems,
+    source,
+    detail
+  };
+}
+
+async function fetchEastmoneyDatacenterProfitForecast(code, totalShares, latestAnnualProfit) {
   const rows = await fetchDatacenterReport('RPT_WEB_RESPREDICT', {
     filter: `(SECURITY_CODE="${code}")`,
     pageSize: '1'
@@ -1088,30 +1170,150 @@ async function fetchProfitForecast(code, totalShares, latestAnnualProfit) {
     };
   }).filter(Boolean);
 
-  if (!forecastItems.length) return null;
-
   const institutionCount = toNumber(row.RATING_LONG_NUM) ?? toNumber(row.RATING_ORG_NUM) ?? 0;
-  const selectedNetProfit = institutionCount > 10
-    ? Math.min(...forecastItems.map((item) => item.netProfit))
-    : Math.max(...forecastItems.map((item) => item.netProfit));
-
-  const yoyGrowth = [];
-  let previousProfit = latestAnnualProfit;
-  forecastItems.forEach((item) => {
-    if (previousProfit && item.netProfit) {
-      yoyGrowth.push((item.netProfit / previousProfit - 1) * 100);
-    }
-    previousProfit = item.netProfit;
-  });
-
-  return {
+  return buildProfitForecastResult({
+    forecastItems,
     institutionCount,
-    selectedNetProfit,
-    expectedGrowth: average(yoyGrowth),
+    latestAnnualProfit,
     industry: row.INDUSTRY_BOARD || '',
     conceptText: row.CONCEPTINDEX_BOARD || '',
-    forecastItems
-  };
+    source: 'eastmoney-datacenter',
+    detail: `东方财富一致预测，券商预测机构数${institutionCount}家`
+  });
+}
+
+async function fetchEastmoneyF10ProfitForecast(code, totalShares, latestAnnualProfit) {
+  const response = await fetchJson('https://emweb.eastmoney.com/PC_HSF10/ProfitForecast/PageAjax', {
+    code: buildEastmoneyF10Code(code)
+  }, 15000, 1);
+
+  const chartItems = (response?.yctj_chart || [])
+    .filter((row) => String(row.YEAR_MARK || '').toUpperCase() === 'E')
+    .map((row) => {
+      const netProfit = toYi(row.PARENT_NETPROFIT);
+      const eps = toNumber(row.EPS);
+      const year = toNumber(row.YEAR);
+      if (!netProfit || !year) return null;
+      return {
+        year,
+        eps: eps ?? (totalShares ? netProfit / totalShares : null),
+        netProfit
+      };
+    })
+    .filter(Boolean);
+
+  const consensusRow = (response?.jgyc || []).find((row) => [2, 3, 4].some((index) => toNumber(row[`EPS${index}`])));
+  const consensusItems = consensusRow
+    ? [2, 3, 4].map((index) => {
+      const eps = toNumber(consensusRow[`EPS${index}`]);
+      const year = toNumber(consensusRow[`YEAR${index}`]);
+      if (!eps || !year || !totalShares) return null;
+      return {
+        year,
+        eps,
+        netProfit: eps * totalShares
+      };
+    }).filter(Boolean)
+    : [];
+
+  const forecastItems = chartItems.length ? chartItems : consensusItems;
+  const ratingCounts = (response?.pjtj || [])
+    .map((row) => toNumber(row.RATING_ORG_NUM))
+    .filter((value) => Number.isFinite(value));
+  const institutionCount = Math.max(...ratingCounts, consensusItems.length ? 1 : 0);
+
+  return buildProfitForecastResult({
+    forecastItems,
+    institutionCount,
+    latestAnnualProfit,
+    source: 'eastmoney-f10',
+    detail: `东方财富F10盈利预测，券商预测机构数${institutionCount}家`
+  });
+}
+
+function htmlToPlainText(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '。')
+    .replace(/<\/(p|div|dd|dt|li|h\d)>/gi, '。')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&gt;/gi, '>')
+    .replace(/&lt;/gi, '<')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractTonghuashunReportForecast(html, totalShares) {
+  const plainText = htmlToPlainText(html);
+  const compactText = plainText.replace(/\s+/g, '');
+  const candidates = compactText.match(/(?:我们预计|预计公司|预测公司)[^。；;]{0,260}(?:归母净利润|归属于母公司[^。；;]{0,20}净利润|净利润)[^。；;]{0,160}/g) || [];
+
+  for (const candidate of candidates) {
+    const yearMatch = candidate.match(/(20\d{2})\s*\/\s*(20\d{2})\s*\/\s*(20\d{2})/);
+    const profitMatch = candidate.match(/(?:归母净利润|归属于母公司[^，。；;]{0,20}净利润|净利润)(?:分别)?(?:为|达|约)?(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)(万亿|亿元|亿|万元|万)?/);
+    if (!yearMatch || !profitMatch) continue;
+
+    const unit = profitMatch[4] || '亿元';
+    const unitMultiplier = unit.includes('万') && !unit.includes('亿') ? 1 / 10000 : unit.includes('万亿') ? 10000 : 1;
+    const years = yearMatch.slice(1, 4).map(Number);
+    const profits = profitMatch.slice(1, 4).map((value) => Number(value) * unitMultiplier);
+    if (years.some((year) => !Number.isFinite(year)) || profits.some((profit) => !Number.isFinite(profit))) {
+      continue;
+    }
+
+    const sourceMatch = plainText.match(/发布时间[:：]\s*(20\d{2}-\d{2}-\d{2})\s*来源[:：]\s*([^\s。]+)/);
+    const countMatches = [...String(html || '').matchAll(/profit-forecast-tab-count-\d+">\s*(\d+)/g)]
+      .map((match) => Number(match[1]))
+      .filter((value) => Number.isFinite(value));
+    const institutionCount = Math.max(sum(countMatches), 1);
+    return {
+      forecastItems: years.map((year, index) => ({
+        year,
+        netProfit: profits[index],
+        eps: totalShares ? profits[index] / totalShares : null
+      })),
+      institutionCount,
+      detail: sourceMatch
+        ? `同花顺研报预测${institutionCount}篇（${sourceMatch[2]}，${sourceMatch[1]}）`
+        : `同花顺研报预测${institutionCount}篇`
+    };
+  }
+
+  return null;
+}
+
+async function fetchTonghuashunResearchProfitForecast(code, totalShares, latestAnnualProfit) {
+  const html = await fetchText(`https://basic.10jqka.com.cn/${code}/worth.html`, {}, 15000, 1, 'gb18030');
+  const parsed = extractTonghuashunReportForecast(html, totalShares);
+  if (!parsed) return null;
+
+  return buildProfitForecastResult({
+    forecastItems: parsed.forecastItems,
+    institutionCount: parsed.institutionCount,
+    latestAnnualProfit,
+    source: 'tonghuashun-report',
+    detail: parsed.detail
+  });
+}
+
+async function fetchProfitForecast(code, totalShares, latestAnnualProfit) {
+  const providers = [
+    () => fetchEastmoneyDatacenterProfitForecast(code, totalShares, latestAnnualProfit),
+    () => fetchEastmoneyF10ProfitForecast(code, totalShares, latestAnnualProfit),
+    () => fetchTonghuashunResearchProfitForecast(code, totalShares, latestAnnualProfit)
+  ];
+
+  for (const provider of providers) {
+    const result = await provider().catch(() => null);
+    if (result) return result;
+  }
+
+  return null;
 }
 
 async function fetchTonghuashunCashAverages(code) {
@@ -1425,11 +1627,12 @@ async function autoFillByStock() {
       marketTrend,
       quote
     });
+    const brokerForecastDetail = forecast?.detail || (forecast ? `券商预测机构数${forecast.institutionCount}家` : '');
     const forecastMeta = brokerForecastUsable
       ? {
         source: 'broker',
         label: '券商盈利预测',
-        detail: `券商预测机构数${forecast.institutionCount}家`,
+        detail: brokerForecastDetail,
         forecastItems: forecast.forecastItems
       }
       : forecast
@@ -1437,8 +1640,8 @@ async function autoFillByStock() {
           source: bankerForecast ? 'broker-loss-investment-bank' : 'broker-loss',
           label: bankerForecast ? '券商预测未转正，投行方式非PE估值' : '券商盈利预测（亏损期）',
           detail: bankerForecast
-            ? `券商三年预测仍未转正，${bankerForecast.industryLabel}，${bankerForecast.marketSupportLabel}，按收入和正常化利润率估值`
-            : '券商三年预测仍未转正，且投行非PE估值输入不足',
+            ? `${brokerForecastDetail}，三年预测仍未转正，${bankerForecast.industryLabel}，${bankerForecast.marketSupportLabel}，按收入和正常化利润率估值`
+            : `${brokerForecastDetail}，三年预测仍未转正，且投行非PE估值输入不足`,
           forecastItems: bankerForecast?.forecastItems || forecast.forecastItems,
           brokerForecastItems: forecast.forecastItems
         }
@@ -1483,10 +1686,10 @@ async function autoFillByStock() {
         : '券商盈利预测未取到，投行模型输入不足，使用历史年报增速和最近年报净利润兜底');
     } else if (!brokerForecastUsable) {
       notes.push(bankerForecast
-        ? `券商预测机构数${forecast.institutionCount}家，但三年预测仍未形成可用正利润，PE口径不作为核心估值，启用${forecastMeta.label}`
-        : `券商预测机构数${forecast.institutionCount}家，但三年预测仍未形成可用正利润，暂无法形成正利润估值`);
+        ? `${brokerForecastDetail}，但三年预测仍未形成可用正利润，PE口径不作为核心估值，启用${forecastMeta.label}`
+        : `${brokerForecastDetail}，但三年预测仍未形成可用正利润，暂无法形成正利润估值`);
     } else {
-      notes.push(`券商预测机构数${forecast.institutionCount}家，${forecast.institutionCount > 10 ? '高关注取三年预测低值' : '低关注取三年预测高值'}`);
+      notes.push(`${brokerForecastDetail}，${forecast.institutionCount > 10 ? '高关注取三年预测低值' : '低关注取三年预测高值'}`);
     }
     if (marketTrend) {
       notes.push(`近${marketTrend.tradingDays}个交易日走势为${marketTrend.trendLabel}，较250日均线${formatNumber(marketTrend.priceToMa250)}%`);
