@@ -1,14 +1,14 @@
 <view class="page safe-bottom">
   <view class="header">
     <view>
-      <view class="title">A股联网估值模型</view>
-      <view class="subtitle">{{asOfTime || '输入公司名称或股票代码后自动取数'}}</view>
+      <view class="title">估值计算器小助手</view>
+      <view class="subtitle">{{asOfTime || '输入公司名称或代码后自动取数'}}</view>
     </view>
     <button class="share-icon" open-type="share" aria-label="分享">↗</button>
   </view>
 
   <view class="search-card">
-    <view class="label">公司名称或股票代码</view>
+    <view class="label">公司名称或代码</view>
     <view class="search-row">
       <input class="search-input" value="{{keyword}}" bindinput="onKeywordInput" confirm-type="search" bindconfirm="runValuation" placeholder="600519 / 贵州茅台 / 688981" />
       <button class="primary-btn" loading="{{loading}}" disabled="{{loading}}" bindtap="runValuation">联网取数</button>
@@ -136,6 +136,6 @@
       </view>
     </view>
 
-    <view class="disclaimer">数据来自公开行情与财务接口，结果仅供研究参考，不构成投资建议。</view>
+    <view class="disclaimer">数据来自公开行情与财务接口，结果仅供研究参考，请自行核验。</view>
   </block>
 </view>

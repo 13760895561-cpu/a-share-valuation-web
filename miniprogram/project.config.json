@@ -1,5 +1,5 @@
 {
-  "description": "A股联网估值模型微信小程序",
+  "description": "估值计算器小助手",
   "setting": {
     "urlCheck": true,
     "es6": true,
@@ -11,7 +11,7 @@
   "compileType": "miniprogram",
   "libVersion": "3.7.10",
   "appid": "wx49e51fa17a039e1f",
-  "projectname": "a-share-valuation-miniprogram",
+  "projectname": "valuation-calculator-helper",
   "miniprogramRoot": "./",
   "condition": {}
 }

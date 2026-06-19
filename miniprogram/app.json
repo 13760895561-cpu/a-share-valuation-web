@@ -3,7 +3,7 @@
     "pages/index/index"
   ],
   "window": {
-    "navigationBarTitleText": "A股联网估值",
+    "navigationBarTitleText": "估值计算器",
     "navigationBarBackgroundColor": "#0b5f59",
     "navigationBarTextStyle": "white",
     "backgroundColor": "#f6f7f4"

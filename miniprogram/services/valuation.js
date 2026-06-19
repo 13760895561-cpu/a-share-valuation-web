@@ -183,7 +183,7 @@ function getStockMarketPrefix(code) {
 function buildStockSecId(candidate) {
   if (candidate.QuoteID) return candidate.QuoteID;
   const code = candidate.Code || candidate.UnifiedCode;
-  if (!code) throw new Error('无法识别股票代码');
+  if (!code) throw new Error('无法识别代码');
   return `${getStockMarketPrefix(code)}.${code}`;
 }
 
@@ -311,7 +311,7 @@ async function searchStockCandidate(keyword) {
 
   const candidates = response?.QuotationCodeTable?.Data || [];
   const aShares = candidates.filter(isAStockCandidate);
-  if (!aShares.length) throw new Error('未找到匹配的A股股票');
+  if (!aShares.length) throw new Error('未找到匹配标的');
   return aShares.find((item) => item.Code === input) || aShares.find((item) => item.Name === keyword.trim()) || aShares[0];
 }
 

@@ -53,7 +53,7 @@ Page({
     const keyword = String(this.data.keyword || '').trim();
     if (!keyword) {
       this.setData({
-        statusText: '请输入股票代码或公司名称。',
+        statusText: '请输入公司名称或代码。',
         statusType: 'error'
       });
       return;
@@ -98,7 +98,7 @@ Page({
     const result = this.data.result;
     const stock = result?.stockCode || this.data.keyword || '';
     return {
-      title: result ? `${result.stockName} 估值：${result.summary.comprehensiveSellPrice}` : 'A股联网估值模型',
+      title: result ? `${result.stockName} 估值计算` : '估值计算器小助手',
       path: `/pages/index/index?stock=${encodeURIComponent(stock)}`
     };
   },
@@ -107,7 +107,7 @@ Page({
     const result = this.data.result;
     const stock = result?.stockCode || this.data.keyword || '';
     return {
-      title: result ? `${result.stockName} A股联网估值` : 'A股联网估值模型',
+      title: result ? `${result.stockName} 估值计算` : '估值计算器小助手',
       query: stock ? `stock=${encodeURIComponent(stock)}` : ''
     };
   }
