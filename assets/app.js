@@ -980,6 +980,159 @@ function combineSellValuesWithEnvironment({
   ]);
 }
 
+function getForecastReliability(forecastMeta) {
+  const source = forecastMeta?.source || '';
+  const institutionCount = toNumber(forecastMeta?.institutionCount) ?? 0;
+  if (source === 'broker') {
+    if (institutionCount >= 10) return { level: 'high', score: 0.9, label: '券商高覆盖' };
+    if (institutionCount >= 3) return { level: 'medium', score: 0.68, label: '券商中覆盖' };
+    return { level: 'low', score: 0.45, label: '券商低覆盖' };
+  }
+  if (source?.includes('investment-bank')) return { level: 'model', score: 0.38, label: '模型预测' };
+  return { level: 'weak', score: 0.3, label: '弱预测' };
+}
+
+function getForecastPathGrowth(forecastItems, fallbackGrowth, profile, reliability) {
+  const items = (forecastItems || []).filter((item) => Number.isFinite(item.netProfit));
+  const firstPositive = items.find((item) => item.netProfit > 0);
+  const lastPositive = [...items].reverse().find((item) => item.netProfit > 0);
+  let growth = fallbackGrowth;
+  if (firstPositive && lastPositive && firstPositive !== lastPositive) {
+    const firstIndex = items.indexOf(firstPositive);
+    const lastIndex = items.indexOf(lastPositive);
+    const span = Math.max(lastIndex - firstIndex, 1);
+    growth = (Math.pow(lastPositive.netProfit / firstPositive.netProfit, 1 / span) - 1) * 100;
+  }
+  const cap = reliability.level === 'low'
+    ? Math.min(profile.growthCap, 32)
+    : reliability.level === 'model' || reliability.level === 'weak'
+      ? Math.min(profile.growthCap, 24)
+      : profile.growthCap;
+  return clamp(growth, -35, cap) ?? 0;
+}
+
+function buildProfitPredictionSeries({ netProfit, expectedGrowth, forecastMeta, profile }) {
+  const reliability = getForecastReliability(forecastMeta);
+  const forecastItems = (forecastMeta?.forecastItems || [])
+    .filter((item) => Number.isFinite(item.netProfit))
+    .slice(0, 3);
+  const pathGrowth = getForecastPathGrowth(forecastItems, expectedGrowth, profile, reliability);
+  const predictions = [];
+
+  for (let index = 0; index < 3; index += 1) {
+    if (forecastItems[index] && Number.isFinite(forecastItems[index].netProfit)) {
+      predictions.push(forecastItems[index].netProfit);
+    } else if (index === 0) {
+      predictions.push(netProfit);
+    } else {
+      predictions.push(predictions[index - 1] * (1 + pathGrowth / 100));
+    }
+  }
+
+  const fadeCap = reliability.level === 'low'
+    ? 0.12
+    : reliability.level === 'model' || reliability.level === 'weak'
+      ? 0.1
+      : profile.stage === 'growth'
+        ? 0.18
+        : 0.1;
+  const fadeGrowth = clamp(pathGrowth / 100 * 0.45, -0.06, fadeCap) ?? 0;
+  for (let index = 3; index < 10; index += 1) {
+    predictions.push(predictions[index - 1] * (1 + fadeGrowth));
+  }
+
+  return { predictions, pathGrowth, reliability };
+}
+
+function getMarketCapAnchor(totalMarketCap, totalShares, marketTrend) {
+  const highMarketCap = marketTrend?.high && totalShares ? marketTrend.high * totalShares : null;
+  const lowMarketCap = marketTrend?.low && totalShares ? marketTrend.low * totalShares : null;
+  const medianAnchor = averagePositive([
+    marketTrend?.medianMarketCap250,
+    marketTrend?.medianMarketCap500,
+    totalMarketCap ? totalMarketCap * 0.85 : null
+  ]);
+  const trendScore = marketTrend?.trendScore ?? 50;
+  const trendAdjustedAnchor = medianAnchor
+    ? medianAnchor * (trendScore >= 75 ? 1.06 : trendScore < 45 ? 0.9 : 1)
+    : null;
+  return { medianAnchor, trendAdjustedAnchor, highMarketCap, lowMarketCap, trendScore };
+}
+
+function stabilizeValuationOutputs({
+  rawComprehensiveSellValue,
+  intrinsicValue,
+  totalSurplusValue,
+  investmentBankValuation,
+  adaptiveValuation,
+  totalMarketCap,
+  totalShares,
+  marketTrend,
+  valuationEnvironment,
+  forecastMeta,
+  profitPredictions
+}) {
+  const reliability = getForecastReliability(forecastMeta);
+  const profile = valuationEnvironment.profile;
+  const marketAnchor = getMarketCapAnchor(totalMarketCap, totalShares, marketTrend);
+  const forwardProfit = profitPredictions.find((profit) => Number.isFinite(profit) && profit > 0);
+  const profitYield = totalMarketCap && forwardProfit ? forwardProfit / totalMarketCap : null;
+  const isLowConfidence = ['low', 'model', 'weak'].includes(reliability.level);
+  const isMicroProfit = profitYield !== null && profitYield < 0.012;
+  const trendScore = marketAnchor.trendScore;
+  const upperCurrentMultiple = reliability.level === 'high'
+    ? (profile.stage === 'growth' ? 4.2 : 3.2)
+    : reliability.level === 'medium'
+      ? (profile.stage === 'growth' ? 3.2 : 2.6)
+      : reliability.level === 'low'
+        ? (profile.stage === 'growth' ? 2.4 : 2)
+        : (profile.stage === 'growth' ? 2.1 : 1.75);
+  let upperBound = averagePositive([
+    totalMarketCap ? totalMarketCap * upperCurrentMultiple : null,
+    marketAnchor.trendAdjustedAnchor ? marketAnchor.trendAdjustedAnchor * (profile.stage === 'growth' ? 2.2 : 1.75) : null
+  ]);
+  if (marketAnchor.highMarketCap && upperBound) upperBound = Math.min(upperBound, marketAnchor.highMarketCap * 1.35);
+  const lowerCurrentMultiple = isLowConfidence || isMicroProfit
+    ? trendScore >= 75 ? 0.55 : trendScore >= 62 ? 0.45 : trendScore >= 45 ? 0.34 : 0.24
+    : trendScore >= 75 ? 0.32 : 0.22;
+  const lowerBound = averagePositive([
+    totalMarketCap ? totalMarketCap * lowerCurrentMultiple : null,
+    isLowConfidence && marketAnchor.trendAdjustedAnchor ? marketAnchor.trendAdjustedAnchor * 0.42 : null
+  ]);
+  let comprehensiveSellValue = rawComprehensiveSellValue;
+  if (upperBound && comprehensiveSellValue > upperBound) comprehensiveSellValue = upperBound;
+  if (lowerBound && comprehensiveSellValue < lowerBound) comprehensiveSellValue = lowerBound;
+
+  const fairBase = weightedAverage([
+    { value: intrinsicValue > 0 ? intrinsicValue : null, weight: reliability.level === 'high' ? 0.25 : 0.12 },
+    { value: totalSurplusValue, weight: 0.18 },
+    { value: investmentBankValuation?.fairValue, weight: 0.24 },
+    { value: adaptiveValuation?.fairValue, weight: 0.26 },
+    { value: marketAnchor.trendAdjustedAnchor, weight: isLowConfidence || isMicroProfit ? 0.34 : 0.12 }
+  ]) ?? comprehensiveSellValue * 0.7;
+  let buyBaseValue = weightedAverage([
+    { value: fairBase, weight: 0.7 },
+    { value: comprehensiveSellValue * 0.72, weight: 0.3 }
+  ]);
+  if (buyBaseValue && comprehensiveSellValue) {
+    buyBaseValue = clamp(buyBaseValue, comprehensiveSellValue * 0.36, comprehensiveSellValue * 0.86);
+  }
+  const note = (upperBound && rawComprehensiveSellValue > upperBound) || (lowerBound && rawComprehensiveSellValue < lowerBound)
+    ? `${reliability.label}，已用长期市值区间和市场趋势对极端估值做稳定化约束`
+    : '';
+
+  return {
+    comprehensiveSellValue,
+    buyBaseValue: buyBaseValue ?? (comprehensiveSellValue ? comprehensiveSellValue * 0.72 : intrinsicValue),
+    rawComprehensiveSellValue,
+    upperBound,
+    lowerBound,
+    marketAnchor: marketAnchor.trendAdjustedAnchor,
+    reliability,
+    note
+  };
+}
+
 function applyMarketImpliedForecastLift(forecastItems, marketTrend, industryProfile, marketAdjustment, latestProfit, quoteMarketCap) {
   if (!forecastItems.length) return forecastItems;
   const thirdYearProfit = forecastItems[2]?.netProfit;
@@ -1946,7 +2099,10 @@ async function autoFillByStock() {
         source: 'broker',
         label: '券商盈利预测',
         detail: brokerForecastDetail,
-        forecastItems: forecast.forecastItems
+        forecastItems: forecast.forecastItems,
+        institutionCount: forecast.institutionCount,
+        industry: forecast.industry,
+        conceptText: forecast.conceptText
       }
       : forecast
         ? {
@@ -1956,7 +2112,8 @@ async function autoFillByStock() {
             ? `${brokerForecastDetail}，三年预测仍未转正，${bankerForecast.industryLabel}，${bankerForecast.marketSupportLabel}，按收入和正常化利润率估值`
             : `${brokerForecastDetail}，三年预测仍未转正，且投行非PE估值输入不足`,
           forecastItems: bankerForecast?.forecastItems || forecast.forecastItems,
-          brokerForecastItems: forecast.forecastItems
+          brokerForecastItems: forecast.forecastItems,
+          institutionCount: forecast.institutionCount
         }
       : {
         source: bankerForecast ? 'investment-bank' : 'historical',
@@ -1964,11 +2121,12 @@ async function autoFillByStock() {
         detail: bankerForecast
           ? `${bankerForecast.modelType}，${bankerForecast.industryLabel}，${bankerForecast.marketSupportLabel}，收入趋势${formatNumber(bankerForecast.revenueGrowthBase)}%，目标净利率${formatNumber(bankerForecast.targetNetMargin)}%`
           : '投行模型输入不足，退回历史年报增速',
-        forecastItems: bankerForecast?.forecastItems || []
+        forecastItems: bankerForecast?.forecastItems || [],
+        institutionCount: 0
       };
     currentForecastMeta = forecastMeta;
     const expectedGrowth = brokerForecastUsable ? forecast.expectedGrowth : bankerForecast?.expectedGrowth ?? historicalGrowth;
-    const netProfit = brokerForecastUsable ? forecast.selectedNetProfit : bankerForecast?.selectedNetProfit ?? latestAnnualProfit;
+    const netProfit = brokerForecastUsable ? forecast.forecastItems?.[0]?.netProfit ?? forecast.selectedNetProfit : bankerForecast?.selectedNetProfit ?? latestAnnualProfit;
     const notes = [];
 
     qs('stock-search').value = `${quote.name} ${code}`;
@@ -2002,7 +2160,7 @@ async function autoFillByStock() {
         ? `${brokerForecastDetail}，但三年预测仍未形成可用正利润，PE口径不作为核心估值，启用${forecastMeta.label}`
         : `${brokerForecastDetail}，但三年预测仍未形成可用正利润，暂无法形成正利润估值`);
     } else {
-      notes.push(`${brokerForecastDetail}，${forecast.institutionCount > 10 ? '高关注取三年预测低值' : '低关注取三年预测高值'}`);
+      notes.push(`${brokerForecastDetail}，按券商三年预测路径估值，${forecast.institutionCount > 10 ? '高覆盖预测置信度较高' : '低覆盖预测已加稳定约束'}`);
     }
     if (marketTrend) {
       notes.push(`近${marketTrend.tradingDays}个交易日走势为${marketTrend.trendLabel}，较250日均线${formatNumber(marketTrend.priceToMa250)}%`);
@@ -2028,7 +2186,11 @@ async function autoFillByStock() {
       notes.push(`${profitTakingInfo.indexName} MA60${profitTakingInfo.ma60 > profitTakingInfo.ma250 ? '高于' : '低于'}MA250，止盈系数${profitTakingInfo.coefficient}`);
     }
 
-    calculateValuation();
+    const calculatedValuation = calculateValuation();
+    const stabilityNote = calculatedValuation?.outputs?.stability?.note;
+    if (stabilityNote && !notes.includes(stabilityNote)) {
+      notes.push(stabilityNote);
+    }
 
     const latestReportDate = latestIncome.REPORT_DATE ? latestIncome.REPORT_DATE.slice(0, 10) : '最新财报';
     const annualReportDate = annualIncome.REPORT_DATE ? annualIncome.REPORT_DATE.slice(0, 10) : '最新年报';
@@ -2443,7 +2605,7 @@ function calculateValuation() {
   const netProfit = getInputNumber('net-profit') ?? 0;
   const profitTaking = getInputNumber('profit-taking') ?? 0;
 
-  if (stockPrice <= 0 || totalShares <= 0 || netProfit <= 0 || !Number.isFinite(expectedGrowth)) {
+  if (stockPrice <= 0 || totalShares <= 0 || !Number.isFinite(netProfit) || !Number.isFinite(expectedGrowth)) {
     setDataStatus('请先补齐股价、总股本、预计N归母净利润和预期增速。', 'error');
     return null;
   }
@@ -2464,15 +2626,14 @@ function calculateValuation() {
   });
   const discountRate = 0.035 + (debtRatio / 100) * 0.09;
   const totalMarketCap = stockPrice * totalShares;
-  const profitPredictions = [netProfit];
-
-  for (let index = 1; index <= 2; index += 1) {
-    profitPredictions.push(netProfit * Math.pow(1 + expectedGrowth / 100, index));
-  }
-  profitPredictions.push(profitPredictions[2] * (1 + (expectedGrowth / 100) * 0.6));
-  for (let index = 4; index <= 9; index += 1) {
-    profitPredictions.push(profitPredictions[index - 1] * (1 + (expectedGrowth / 100) * 0.6));
-  }
+  const forecastMeta = getForecastDisplayMeta();
+  const predictionSeries = buildProfitPredictionSeries({
+    netProfit,
+    expectedGrowth,
+    forecastMeta,
+    profile: valuationEnvironment.profile
+  });
+  const profitPredictions = predictionSeries.predictions;
 
   const tenYearTotalProfit = profitPredictions.reduce((sum, profit) => sum + profit, 0);
   const grossMarginDiff = (currentGrossMargin - previousGrossMargin) / 100;
@@ -2481,8 +2642,6 @@ function calculateValuation() {
   const rawIntrinsicValue = tenYearTotalProfit * buyingCoefficient;
   const intrinsicValue = rawIntrinsicValue * valuationEnvironment.valuationMultiplier;
   const intrinsicSellValue = intrinsicValue * profitTaking;
-  const buyPoints = Array.from({ length: 5 }, (_, index) => intrinsicValue * Math.pow(0.9, index + 1));
-  const finalBuyPoint = intrinsicValue * Math.pow(0.9, 9);
   const rawReasonablePE = (1 / (discountRate / 2)) * 0.8;
   const reasonablePE = clamp(
     rawReasonablePE * valuationEnvironment.peMultipleFactor,
@@ -2499,7 +2658,6 @@ function calculateValuation() {
   const surplusSellValue = fcfBasedValuationUsable && surplusDenominator > 0.001
     ? normalizedFcf / Math.max(surplusDenominator + valuationEnvironment.riskPremium, 0.001) * valuationEnvironment.cashFlowMultiplier
     : null;
-  const forecastMeta = getForecastDisplayMeta();
   const adaptiveValuation = calculateIndustryAdaptiveValuation({
     profitPredictions,
     forecastMeta,
@@ -2516,14 +2674,13 @@ function calculateValuation() {
   });
   const adaptiveSellPremium = clamp(0.1 + valuationEnvironment.environmentScore * 0.002, 0.12, 0.28) ?? 0.16;
   const adaptiveSellValue = adaptiveValuation.fairValue ? adaptiveValuation.fairValue * (1 + adaptiveSellPremium) : null;
-  const comprehensiveSellValue = combineSellValuesWithEnvironment({
+  const rawComprehensiveSellValue = combineSellValuesWithEnvironment({
     intrinsicSellValue,
     peSellValue,
     surplusSellValue,
     adaptiveSellValue,
     valuationEnvironment
   });
-  const comprehensiveMarketStatus = getMarketStatus(comprehensiveSellValue, totalMarketCap);
   const investmentBankValuation = calculateInvestmentBankValuation({
     profitPredictions,
     discountRate,
@@ -2539,6 +2696,24 @@ function calculateValuation() {
     totalMarketCap,
     valuationEnvironment
   });
+  const stability = stabilizeValuationOutputs({
+    rawComprehensiveSellValue,
+    intrinsicValue,
+    totalSurplusValue,
+    investmentBankValuation,
+    adaptiveValuation,
+    totalMarketCap,
+    totalShares,
+    marketTrend: valuationContext?.marketTrend,
+    valuationEnvironment,
+    forecastMeta,
+    profitPredictions
+  });
+  const comprehensiveSellValue = stability.comprehensiveSellValue;
+  const comprehensiveMarketStatus = getMarketStatus(comprehensiveSellValue, totalMarketCap);
+  const buyBaseValue = stability.buyBaseValue;
+  const buyPoints = Array.from({ length: 5 }, (_, index) => buyBaseValue * Math.pow(0.9, index + 1));
+  const finalBuyPoint = buyBaseValue * Math.pow(0.9, 9);
 
   setTextValue('discount-rate', discountRate * 100, 2, '%');
   setTextValue('buying-coefficient', buyingCoefficient, 4);
@@ -2626,6 +2801,7 @@ function calculateValuation() {
       intrinsicSellValue,
       peSellValue,
       surplusSellValue,
+      rawComprehensiveSellValue,
       comprehensiveSellValue,
       adaptiveSellValue,
       adaptiveSellPremium,
@@ -2634,6 +2810,8 @@ function calculateValuation() {
       valuationEnvironment,
       investmentBankValuation,
       adaptiveValuation,
+      predictionSeries,
+      stability,
       ...investmentBankPrices,
       buyPoints,
       buyPointPrices,

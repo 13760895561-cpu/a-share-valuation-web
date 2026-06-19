@@ -818,6 +818,149 @@ function combineSellValuesWithEnvironment({ intrinsicSellValue, peSellValue, sur
   return weightedAverage([{ value: intrinsicSellValue, weight: weights.intrinsic }, { value: peSellValue, weight: weights.pe }, { value: surplusSellValue, weight: weights.surplus }, { value: adaptiveSellValue, weight: weights.adaptive }]);
 }
 
+function getForecastReliability(forecastMeta) {
+  const source = forecastMeta?.source || '';
+  const institutionCount = toNumber(forecastMeta?.institutionCount) ?? 0;
+  if (source === 'broker') {
+    if (institutionCount >= 10) return { level: 'high', score: 0.9, label: '券商高覆盖' };
+    if (institutionCount >= 3) return { level: 'medium', score: 0.68, label: '券商中覆盖' };
+    return { level: 'low', score: 0.45, label: '券商低覆盖' };
+  }
+  if (source?.includes('investment-bank')) return { level: 'model', score: 0.38, label: '模型预测' };
+  return { level: 'weak', score: 0.3, label: '弱预测' };
+}
+
+function getForecastPathGrowth(forecastItems, fallbackGrowth, profile, reliability) {
+  const items = (forecastItems || []).filter((item) => Number.isFinite(item.netProfit));
+  const firstPositive = items.find((item) => item.netProfit > 0);
+  const lastPositive = [...items].reverse().find((item) => item.netProfit > 0);
+  let growth = fallbackGrowth;
+  if (firstPositive && lastPositive && firstPositive !== lastPositive) {
+    const firstIndex = items.indexOf(firstPositive);
+    const lastIndex = items.indexOf(lastPositive);
+    const span = Math.max(lastIndex - firstIndex, 1);
+    growth = (Math.pow(lastPositive.netProfit / firstPositive.netProfit, 1 / span) - 1) * 100;
+  }
+  const cap = reliability.level === 'low'
+    ? Math.min(profile.growthCap, 32)
+    : reliability.level === 'model' || reliability.level === 'weak'
+      ? Math.min(profile.growthCap, 24)
+      : profile.growthCap;
+  return clamp(growth, -35, cap) ?? 0;
+}
+
+function buildProfitPredictionSeries({ netProfit, expectedGrowth, forecastMeta, profile }) {
+  const reliability = getForecastReliability(forecastMeta);
+  const forecastItems = (forecastMeta?.forecastItems || [])
+    .filter((item) => Number.isFinite(item.netProfit))
+    .slice(0, 3);
+  const pathGrowth = getForecastPathGrowth(forecastItems, expectedGrowth, profile, reliability);
+  const predictions = [];
+
+  for (let index = 0; index < 3; index += 1) {
+    if (forecastItems[index] && Number.isFinite(forecastItems[index].netProfit)) {
+      predictions.push(forecastItems[index].netProfit);
+      continue;
+    }
+    if (index === 0) {
+      predictions.push(netProfit);
+    } else {
+      predictions.push(predictions[index - 1] * (1 + pathGrowth / 100));
+    }
+  }
+
+  const fadeCap = reliability.level === 'low'
+    ? 0.12
+    : reliability.level === 'model' || reliability.level === 'weak'
+      ? 0.1
+      : profile.stage === 'growth'
+        ? 0.18
+        : 0.1;
+  const fadeGrowth = clamp(pathGrowth / 100 * 0.45, -0.06, fadeCap) ?? 0;
+  for (let index = 3; index < 10; index += 1) {
+    predictions.push(predictions[index - 1] * (1 + fadeGrowth));
+  }
+
+  return { predictions, pathGrowth, reliability };
+}
+
+function getMarketCapAnchor(totalMarketCap, totalShares, marketTrend) {
+  const highMarketCap = marketTrend?.high && totalShares ? marketTrend.high * totalShares : null;
+  const lowMarketCap = marketTrend?.low && totalShares ? marketTrend.low * totalShares : null;
+  const medianAnchor = averagePositive([
+    marketTrend?.medianMarketCap250,
+    marketTrend?.medianMarketCap500,
+    totalMarketCap ? totalMarketCap * 0.85 : null
+  ]);
+  const trendScore = marketTrend?.trendScore ?? 50;
+  const trendAdjustedAnchor = medianAnchor
+    ? medianAnchor * (trendScore >= 75 ? 1.06 : trendScore < 45 ? 0.9 : 1)
+    : null;
+  return { medianAnchor, trendAdjustedAnchor, highMarketCap, lowMarketCap, trendScore };
+}
+
+function stabilizeValuationOutputs({ rawComprehensiveSellValue, intrinsicValue, totalSurplusValue, investmentBankValuation, adaptiveValuation, totalMarketCap, totalShares, marketTrend, valuationEnvironment, forecastMeta, profitPredictions }) {
+  const reliability = getForecastReliability(forecastMeta);
+  const profile = valuationEnvironment.profile;
+  const marketAnchor = getMarketCapAnchor(totalMarketCap, totalShares, marketTrend);
+  const forwardProfit = profitPredictions.find((profit) => Number.isFinite(profit) && profit > 0);
+  const profitYield = totalMarketCap && forwardProfit ? forwardProfit / totalMarketCap : null;
+  const isLowConfidence = ['low', 'model', 'weak'].includes(reliability.level);
+  const isMicroProfit = profitYield !== null && profitYield < 0.012;
+  const trendScore = marketAnchor.trendScore;
+  const upperCurrentMultiple = reliability.level === 'high'
+    ? (profile.stage === 'growth' ? 4.2 : 3.2)
+    : reliability.level === 'medium'
+      ? (profile.stage === 'growth' ? 3.2 : 2.6)
+      : reliability.level === 'low'
+        ? (profile.stage === 'growth' ? 2.4 : 2)
+        : (profile.stage === 'growth' ? 2.1 : 1.75);
+  let upperBound = averagePositive([
+    totalMarketCap ? totalMarketCap * upperCurrentMultiple : null,
+    marketAnchor.trendAdjustedAnchor ? marketAnchor.trendAdjustedAnchor * (profile.stage === 'growth' ? 2.2 : 1.75) : null
+  ]);
+  if (marketAnchor.highMarketCap && upperBound) upperBound = Math.min(upperBound, marketAnchor.highMarketCap * 1.35);
+  const lowerCurrentMultiple = isLowConfidence || isMicroProfit
+    ? trendScore >= 75 ? 0.55 : trendScore >= 62 ? 0.45 : trendScore >= 45 ? 0.34 : 0.24
+    : trendScore >= 75 ? 0.32 : 0.22;
+  const lowerBound = averagePositive([
+    totalMarketCap ? totalMarketCap * lowerCurrentMultiple : null,
+    isLowConfidence && marketAnchor.trendAdjustedAnchor ? marketAnchor.trendAdjustedAnchor * 0.42 : null
+  ]);
+  let comprehensiveSellValue = rawComprehensiveSellValue;
+  if (upperBound && comprehensiveSellValue > upperBound) comprehensiveSellValue = upperBound;
+  if (lowerBound && comprehensiveSellValue < lowerBound) comprehensiveSellValue = lowerBound;
+
+  const fairBase = weightedAverage([
+    { value: intrinsicValue > 0 ? intrinsicValue : null, weight: reliability.level === 'high' ? 0.25 : 0.12 },
+    { value: totalSurplusValue, weight: 0.18 },
+    { value: investmentBankValuation?.fairValue, weight: 0.24 },
+    { value: adaptiveValuation?.fairValue, weight: 0.26 },
+    { value: marketAnchor.trendAdjustedAnchor, weight: isLowConfidence || isMicroProfit ? 0.34 : 0.12 }
+  ]) ?? comprehensiveSellValue * 0.7;
+  let buyBaseValue = weightedAverage([
+    { value: fairBase, weight: 0.7 },
+    { value: comprehensiveSellValue * 0.72, weight: 0.3 }
+  ]);
+  if (buyBaseValue && comprehensiveSellValue) {
+    buyBaseValue = clamp(buyBaseValue, comprehensiveSellValue * 0.36, comprehensiveSellValue * 0.86);
+  }
+  const note = (upperBound && rawComprehensiveSellValue > upperBound) || (lowerBound && rawComprehensiveSellValue < lowerBound)
+    ? `${reliability.label}，已用长期市值区间和市场趋势对极端估值做稳定化约束`
+    : '';
+
+  return {
+    comprehensiveSellValue,
+    buyBaseValue: buyBaseValue ?? (comprehensiveSellValue ? comprehensiveSellValue * 0.72 : intrinsicValue),
+    rawComprehensiveSellValue,
+    upperBound,
+    lowerBound,
+    marketAnchor: marketAnchor.trendAdjustedAnchor,
+    reliability,
+    note
+  };
+}
+
 function getMarketStatus(targetValue, currentMarketCap) {
   const target = toNumber(targetValue);
   const current = toNumber(currentMarketCap);
@@ -959,10 +1102,8 @@ function calculateValuation({ quote, annualIncomeRows, latestBalance, forecastMe
   const valuationEnvironment = calculateValuationEnvironment({ stockName: quote.name, stockCode: quote.code, industryText: context.industryText, marketTrend, annualMetrics: context.annualMetrics, expectedGrowth, currentGrossMargin, previousGrossMargin, debtRatio, dividendRate });
   const discountRate = 0.035 + (debtRatio / 100) * 0.09;
   const totalMarketCap = stockPrice * totalShares;
-  const profitPredictions = [netProfit];
-  for (let index = 1; index <= 2; index += 1) profitPredictions.push(netProfit * Math.pow(1 + expectedGrowth / 100, index));
-  profitPredictions.push(profitPredictions[2] * (1 + (expectedGrowth / 100) * 0.6));
-  for (let index = 4; index <= 9; index += 1) profitPredictions.push(profitPredictions[index - 1] * (1 + (expectedGrowth / 100) * 0.6));
+  const predictionSeries = buildProfitPredictionSeries({ netProfit, expectedGrowth, forecastMeta, profile: valuationEnvironment.profile });
+  const profitPredictions = predictionSeries.predictions;
   const tenYearTotalProfit = profitPredictions.reduce((total, profit) => total + profit, 0);
   const grossMarginDiff = (currentGrossMargin - previousGrossMargin) / 100;
   const debtAdjustment = clamp(1 + (0.5 - debtRatio / 100), 0.6, 1.4);
@@ -982,11 +1123,14 @@ function calculateValuation({ quote, annualIncomeRows, latestBalance, forecastMe
   const adaptiveValuation = calculateIndustryAdaptiveValuation({ profitPredictions, forecastMeta, totalShares, totalMarketCap, discountRate, perpetualGrowth, expectedGrowth, dividendRate, dAndA, capex, valuationEnvironment, context });
   const adaptiveSellPremium = clamp(0.1 + valuationEnvironment.environmentScore * 0.002, 0.12, 0.28) ?? 0.16;
   const adaptiveSellValue = adaptiveValuation.fairValue ? adaptiveValuation.fairValue * (1 + adaptiveSellPremium) : null;
-  const comprehensiveSellValue = combineSellValuesWithEnvironment({ intrinsicSellValue, peSellValue, surplusSellValue, adaptiveSellValue, valuationEnvironment });
   const investmentBankValuation = calculateInvestmentBankValuation({ profitPredictions, discountRate, perpetualGrowth, expectedGrowth, currentGrossMargin, previousGrossMargin, debtRatio, dividendRate, dAndA, capex, reasonablePE, totalMarketCap, valuationEnvironment });
-  const buyPoints = Array.from({ length: 5 }, (_, index) => intrinsicValue * Math.pow(0.9, index + 1));
-  const finalBuyPoint = intrinsicValue * Math.pow(0.9, 9);
-  return { discountRate, buyingCoefficient, intrinsicValue, totalSurplusValue, reasonablePE, totalMarketCap, intrinsicSellValue, peSellValue, surplusSellValue, comprehensiveSellValue, comprehensiveMarketStatus: getMarketStatus(comprehensiveSellValue, totalMarketCap), investmentBankValuation, adaptiveValuation, valuationEnvironment, profitPredictions, buyPoints, finalBuyPoint };
+  const rawComprehensiveSellValue = combineSellValuesWithEnvironment({ intrinsicSellValue, peSellValue, surplusSellValue, adaptiveSellValue, valuationEnvironment });
+  const stability = stabilizeValuationOutputs({ rawComprehensiveSellValue, intrinsicValue, totalSurplusValue, investmentBankValuation, adaptiveValuation, totalMarketCap, totalShares, marketTrend, valuationEnvironment, forecastMeta, profitPredictions });
+  const comprehensiveSellValue = stability.comprehensiveSellValue;
+  const buyBaseValue = stability.buyBaseValue;
+  const buyPoints = Array.from({ length: 5 }, (_, index) => buyBaseValue * Math.pow(0.9, index + 1));
+  const finalBuyPoint = buyBaseValue * Math.pow(0.9, 9);
+  return { discountRate, buyingCoefficient, intrinsicValue, totalSurplusValue, reasonablePE, totalMarketCap, intrinsicSellValue, peSellValue, surplusSellValue, rawComprehensiveSellValue, comprehensiveSellValue, comprehensiveMarketStatus: getMarketStatus(comprehensiveSellValue, totalMarketCap), investmentBankValuation, adaptiveValuation, valuationEnvironment, predictionSeries, stability, profitPredictions, buyPoints, finalBuyPoint };
 }
 
 function buildForecastDisplay(forecastMeta, profitPredictions) {
@@ -1116,21 +1260,22 @@ async function evaluateStock(keyword) {
   const bankerForecast = brokerForecastUsable ? null : estimateInvestmentBankProfitForecast({ annualIncomeRows, latestAnnualProfit, industryText, debtRatio, dAndA, capex, marketTrend, quote });
   const brokerForecastDetail = forecast?.detail || (forecast ? `券商预测机构数${forecast.institutionCount}家` : '');
   const forecastMeta = brokerForecastUsable
-    ? { source: 'broker', label: '券商盈利预测', detail: brokerForecastDetail, forecastItems: forecast.forecastItems, industry: forecast.industry, conceptText: forecast.conceptText }
+    ? { source: 'broker', label: '券商盈利预测', detail: brokerForecastDetail, forecastItems: forecast.forecastItems, institutionCount: forecast.institutionCount, industry: forecast.industry, conceptText: forecast.conceptText }
     : forecast
-      ? { source: bankerForecast ? 'broker-loss-investment-bank' : 'broker-loss', label: bankerForecast ? '券商预测未转正，投行方式非PE估值' : '券商盈利预测（亏损期）', detail: bankerForecast ? `${brokerForecastDetail}，三年预测仍未转正，${bankerForecast.industryLabel}，${bankerForecast.marketSupportLabel}` : `${brokerForecastDetail}，三年预测仍未转正`, forecastItems: bankerForecast?.forecastItems || forecast.forecastItems }
-      : { source: bankerForecast ? 'investment-bank' : 'historical', label: bankerForecast ? '投行方式简易盈利预测' : '历史数据兜底预测', detail: bankerForecast ? `${bankerForecast.modelType}，${bankerForecast.industryLabel}，${bankerForecast.marketSupportLabel}` : '退回历史年报增速', forecastItems: bankerForecast?.forecastItems || [] };
+      ? { source: bankerForecast ? 'broker-loss-investment-bank' : 'broker-loss', label: bankerForecast ? '券商预测未转正，投行方式非PE估值' : '券商盈利预测（亏损期）', detail: bankerForecast ? `${brokerForecastDetail}，三年预测仍未转正，${bankerForecast.industryLabel}，${bankerForecast.marketSupportLabel}` : `${brokerForecastDetail}，三年预测仍未转正`, forecastItems: bankerForecast?.forecastItems || forecast.forecastItems, institutionCount: forecast.institutionCount }
+      : { source: bankerForecast ? 'investment-bank' : 'historical', label: bankerForecast ? '投行方式简易盈利预测' : '历史数据兜底预测', detail: bankerForecast ? `${bankerForecast.modelType}，${bankerForecast.industryLabel}，${bankerForecast.marketSupportLabel}` : '退回历史年报增速', forecastItems: bankerForecast?.forecastItems || [], institutionCount: 0 };
   const expectedGrowth = brokerForecastUsable ? forecast.expectedGrowth : bankerForecast?.expectedGrowth ?? historicalGrowth ?? 0;
-  const netProfit = brokerForecastUsable ? forecast.selectedNetProfit : bankerForecast?.selectedNetProfit ?? latestAnnualProfit ?? 0;
+  const netProfit = brokerForecastUsable ? forecast.forecastItems?.[0]?.netProfit ?? forecast.selectedNetProfit : bankerForecast?.selectedNetProfit ?? latestAnnualProfit ?? 0;
   const inputs = { stockPrice: quote.price ?? 0, dividendRate, totalShares: quote.totalShares ?? 0, currentGrossMargin: latestGrossMargin ?? 0, previousGrossMargin: previousGrossMargin ?? 0, debtRatio: debtRatio ?? 0, dAndA, capex, perpetualGrowth, expectedGrowth, netProfit, profitTaking: profitTakingInfo.coefficient };
   const context = { industryText, annualMetrics, marketTrend, bookValue: toYi(latestBalance.TOTAL_EQUITY), totalAssets: toYi(latestBalance.TOTAL_ASSETS), cash: toYi(latestBalance.MONETARYFUNDS), liabilities: toYi(latestBalance.TOTAL_LIABILITIES), netDebt: (toYi(latestBalance.TOTAL_LIABILITIES) ?? 0) - (toYi(latestBalance.MONETARYFUNDS) ?? 0) };
   const valuation = calculateValuation({ quote, annualIncomeRows, latestBalance, forecastMeta, marketTrend, inputs, context });
   const notes = [];
   if (!forecast) notes.push(`券商盈利预测未取到，启用${forecastMeta.label}`);
-  else notes.push(`${brokerForecastDetail}，${forecast.institutionCount > 10 ? '高关注取三年预测低值' : '低关注取三年预测高值'}`);
+  else notes.push(`${brokerForecastDetail}，按券商三年预测路径估值，${forecast.institutionCount > 10 ? '高覆盖预测置信度较高' : '低覆盖预测已加稳定约束'}`);
   if (marketTrend) notes.push(`近${marketTrend.tradingDays}个交易日走势为${marketTrend.trendLabel}，较250日均线${formatNumber(marketTrend.priceToMa250)}%`);
   if (profitTakingInfo.ma60 === null || profitTakingInfo.ma250 === null) notes.push(`${profitTakingInfo.indexName}均线数据不足，止盈系数按1.382`);
   else notes.push(`${profitTakingInfo.indexName} MA60${profitTakingInfo.ma60 > profitTakingInfo.ma250 ? '高于' : '低于'}MA250，止盈系数${profitTakingInfo.coefficient}`);
+  if (valuation.stability?.note) notes.push(valuation.stability.note);
   const display = buildDisplayResult({ quote, inputs, valuation, forecastMeta, notes });
   display.asOfTime = `最新取数：${new Date().toLocaleString('zh-CN', { hour12: false })}`;
   display.statusText = `已填充 ${quote.name}（${code}）。${notes.join('；')}`;
@@ -1142,6 +1287,10 @@ module.exports = {
   _test: {
     formatNumber,
     getIndustryProfile,
-    calculateValuationEnvironment
+    calculateValuationEnvironment,
+    buildProfitPredictionSeries,
+    stabilizeValuationOutputs,
+    getForecastReliability,
+    getMarketCapAnchor
   }
 };
