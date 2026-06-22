@@ -58,7 +58,10 @@
     <view class="card">
       <view class="card-head">
         <view class="card-title">输入参数</view>
-        <button class="share-btn" open-type="share">分享给朋友</button>
+        <view class="input-actions">
+          <button class="manual-toggle-btn" bindtap="toggleManualPanel">{{manualPanelOpen ? '收起调整' : '调整参数'}}</button>
+          <button class="share-btn" open-type="share">分享给朋友</button>
+        </view>
       </view>
       <view class="info-grid">
         <view><text>公司</text><strong>{{result.stockName}} {{result.stockCode}}</strong></view>
@@ -74,6 +77,63 @@
         <view><text>预期增速</text><strong>{{result.inputs.expectedGrowth}}%</strong></view>
         <view><text>N归母净利润</text><strong>{{result.inputs.netProfit}} 亿元</strong></view>
         <view><text>止盈系数</text><strong>{{result.inputs.profitTaking}}倍</strong></view>
+      </view>
+      <view class="manual-panel" wx:if="{{manualPanelOpen}}">
+        <view class="manual-note">默认使用联网参数；修改任意参数后点击应用，结果会按整套当前参数重新计算。</view>
+        <view class="manual-grid">
+          <view class="manual-field">
+            <text>股价（元）</text>
+            <input class="manual-input" type="digit" value="{{manualInputs.stockPrice}}" data-field="stockPrice" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>股息率TTM（%）</text>
+            <input class="manual-input" type="digit" value="{{manualInputs.dividendRate}}" data-field="dividendRate" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>总股本（亿股）</text>
+            <input class="manual-input" type="digit" value="{{manualInputs.totalShares}}" data-field="totalShares" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>最新毛利率（%）</text>
+            <input class="manual-input" type="digit" value="{{manualInputs.currentGrossMargin}}" data-field="currentGrossMargin" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>三年前毛利率（%）</text>
+            <input class="manual-input" type="digit" value="{{manualInputs.previousGrossMargin}}" data-field="previousGrossMargin" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>负债率（%）</text>
+            <input class="manual-input" type="digit" value="{{manualInputs.debtRatio}}" data-field="debtRatio" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>预计D&A（亿元）</text>
+            <input class="manual-input" type="digit" value="{{manualInputs.dAndA}}" data-field="dAndA" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>预计Capex（亿元）</text>
+            <input class="manual-input" type="digit" value="{{manualInputs.capex}}" data-field="capex" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>永续增长率（%）</text>
+            <input class="manual-input" type="digit" value="{{manualInputs.perpetualGrowth}}" data-field="perpetualGrowth" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>预期增速（%）</text>
+            <input class="manual-input" type="text" value="{{manualInputs.expectedGrowth}}" data-field="expectedGrowth" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>预计N归母净利润（亿元）</text>
+            <input class="manual-input" type="text" value="{{manualInputs.netProfit}}" data-field="netProfit" bindinput="onManualInput" />
+          </view>
+          <view class="manual-field">
+            <text>止盈系数（倍）</text>
+            <input class="manual-input" type="digit" value="{{manualInputs.profitTaking}}" data-field="profitTaking" bindinput="onManualInput" />
+          </view>
+        </view>
+        <view class="manual-actions">
+          <button class="manual-secondary-btn" bindtap="restoreOnlineInputs">恢复联网参数</button>
+          <button class="manual-apply-btn" bindtap="applyManualInputs">{{manualDirty ? '应用修改' : '按当前参数重算'}}</button>
+        </view>
       </view>
     </view>
 

@@ -1,11 +1,27 @@
 const EASTMONEY_DATACENTER = 'https://datacenter-web.eastmoney.com/api/data/v1/get';
 const STORAGE_KEY = 'stockValuations.v2';
+const VALUATION_PARAMETER_INPUT_IDS = [
+  'stock-price',
+  'dividend-rate',
+  'total-shares',
+  'current-gross-margin',
+  'previous-gross-margin',
+  'debt-ratio',
+  'd-and-a',
+  'capex',
+  'perpetual-growth',
+  'expected-growth',
+  'net-profit',
+  'profit-taking'
+];
 
 let profitChart = null;
 let savedValuations = readSavedValuations();
 let currentValuation = null;
 let currentForecastMeta = null;
 let currentValuationContext = null;
+let manualParameterOverride = false;
+let manualRecalcTimer = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   applySavedTheme();
@@ -70,6 +86,8 @@ function initTabs() {
 }
 
 function initButtons() {
+  initManualParameterInputs();
+
   qs('auto-fill-btn').addEventListener('click', autoFillByStock);
   qs('stock-search').addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
@@ -103,6 +121,26 @@ function initButtons() {
   qs('help-btn').addEventListener('click', () => openModal('help-modal'));
   qs('close-help-btn').addEventListener('click', () => closeModal('help-modal'));
   qs('close-modal-btn').addEventListener('click', () => closeModal('history-detail-modal'));
+}
+
+function initManualParameterInputs() {
+  VALUATION_PARAMETER_INPUT_IDS.forEach((id) => {
+    const input = qs(id);
+    if (!input) return;
+    input.addEventListener('input', () => {
+      if (!currentValuation && !currentValuationContext) return;
+      manualParameterOverride = true;
+      clearTimeout(manualRecalcTimer);
+      manualRecalcTimer = setTimeout(() => {
+        const valuation = calculateValuation();
+        if (!valuation) return;
+        const message = '已按手动调整参数重新计算；再次点击联网取数可恢复公开数据。';
+        setAsOfTime(`手动重算：${new Date().toLocaleString('zh-CN', { hour12: false })}`);
+        setDataStatus(message, 'warning');
+        currentValuation.sourceNote = message;
+      }, 180);
+    });
+  });
 }
 
 function initModals() {
@@ -225,7 +263,9 @@ function delay(ms) {
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null;
-  const number = Number(value);
+  const normalized = typeof value === 'string' ? value.replace(/,/g, '').trim() : value;
+  if (normalized === '') return null;
+  const number = Number(normalized);
   return Number.isFinite(number) ? number : null;
 }
 
@@ -363,11 +403,20 @@ function setMarketStatus(id, status) {
 }
 
 function getForecastDisplayMeta() {
-  return currentForecastMeta || {
+  const baseMeta = currentForecastMeta || {
     source: 'manual',
     label: '手动输入预测',
     detail: '按当前输入参数计算',
     forecastItems: []
+  };
+  if (!manualParameterOverride) return baseMeta;
+  return {
+    ...baseMeta,
+    source: 'manual-adjusted',
+    label: '手动参数预测',
+    detail: '已按手动调整参数重算，预测路径使用当前N归母净利润和预期增速。',
+    forecastItems: [],
+    manualOverride: true
   };
 }
 
@@ -1104,9 +1153,11 @@ function getForecastPathGrowth(forecastItems, fallbackGrowth, profile, reliabili
 
 function buildProfitPredictionSeries({ netProfit, expectedGrowth, forecastMeta, profile }) {
   const reliability = getForecastReliability(forecastMeta);
-  const forecastItems = (forecastMeta?.forecastItems || [])
-    .filter((item) => Number.isFinite(item.netProfit))
-    .slice(0, 3);
+  const forecastItems = forecastMeta?.manualOverride
+    ? []
+    : (forecastMeta?.forecastItems || [])
+      .filter((item) => Number.isFinite(item.netProfit))
+      .slice(0, 3);
   const pathGrowth = getForecastPathGrowth(forecastItems, expectedGrowth, profile, reliability);
   const predictions = [];
 
@@ -2105,6 +2156,8 @@ async function autoFillByStock() {
     return;
   }
 
+  manualParameterOverride = false;
+  clearTimeout(manualRecalcTimer);
   setAutoButtonLoading(true);
   setDataStatus('正在联网获取行情、财务、现金流、盈利预测和指数均线数据...', 'loading');
 

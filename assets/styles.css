@@ -170,6 +170,14 @@ button:disabled {
   outline: none;
 }
 
+.field input[readonly],
+.field input.readonly-display {
+  color: var(--primary-dark);
+  background: var(--surface-alt);
+  font-weight: 750;
+  cursor: default;
+}
+
 .search-row input:focus,
 .field input:focus {
   border-color: var(--primary);

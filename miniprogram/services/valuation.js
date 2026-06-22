@@ -1,5 +1,19 @@
 const EASTMONEY_DATACENTER = 'https://datacenter-web.eastmoney.com/api/data/v1/get';
 const SEARCH_TOKEN = 'D43BF722C8E33BDC906FB84D85E326E8';
+const EDITABLE_INPUT_FIELDS = [
+  { key: 'stockPrice', label: '股价', digits: 2, positive: true },
+  { key: 'dividendRate', label: '股息率TTM', digits: 2 },
+  { key: 'totalShares', label: '总股本', digits: 2, positive: true },
+  { key: 'currentGrossMargin', label: '最新毛利率', digits: 2 },
+  { key: 'previousGrossMargin', label: '三年前毛利率', digits: 2 },
+  { key: 'debtRatio', label: '负债率', digits: 2 },
+  { key: 'dAndA', label: '预计D&A', digits: 2 },
+  { key: 'capex', label: '预计Capex', digits: 2 },
+  { key: 'perpetualGrowth', label: '永续增长率', digits: 2 },
+  { key: 'expectedGrowth', label: '预期增速', digits: 2 },
+  { key: 'netProfit', label: '预计N归母净利润', digits: 2 },
+  { key: 'profitTaking', label: '止盈系数', digits: 3, positive: true }
+];
 
 function buildQuery(params = {}) {
   return Object.keys(params)
@@ -104,7 +118,9 @@ function requestText(url, params = {}, options = {}) {
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null;
-  const number = Number(value);
+  const normalized = typeof value === 'string' ? value.replace(/,/g, '').trim() : value;
+  if (normalized === '') return null;
+  const number = Number(normalized);
   return Number.isFinite(number) ? number : null;
 }
 
@@ -154,6 +170,56 @@ function formatNumber(value, digits = 2) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits
   });
+}
+
+function formatEditableNumber(value, digits = 2) {
+  const number = toNumber(value);
+  return number === null ? '' : Number(number.toFixed(digits)).toString();
+}
+
+function buildEditableInputs(inputs = {}) {
+  return EDITABLE_INPUT_FIELDS.reduce((result, field) => {
+    result[field.key] = formatEditableNumber(inputs[field.key], field.digits);
+    return result;
+  }, {});
+}
+
+function parseManualInputs(baseInputs = {}, manualInputs = {}) {
+  const inputs = { ...baseInputs };
+  EDITABLE_INPUT_FIELDS.forEach((field) => {
+    const rawValue = manualInputs[field.key] !== undefined ? manualInputs[field.key] : baseInputs[field.key];
+    const parsedValue = toNumber(rawValue);
+    if (parsedValue === null) {
+      throw new Error(`请填写${field.label}`);
+    }
+    if (field.positive && parsedValue <= 0) {
+      throw new Error(`${field.label}必须大于0`);
+    }
+    inputs[field.key] = parsedValue;
+  });
+  return inputs;
+}
+
+function createManualForecastMeta(baseMeta = {}) {
+  return {
+    ...baseMeta,
+    source: 'manual-adjusted',
+    label: '手动参数预测',
+    detail: '已按手动调整参数重算，预测路径使用当前N归母净利润和预期增速。',
+    forecastItems: [],
+    manualOverride: true
+  };
+}
+
+function attachValuationState(display, state, inputs) {
+  const onlineInputs = state.onlineInputs || inputs;
+  display.editableInputs = buildEditableInputs(inputs);
+  display._valuationState = {
+    ...state,
+    inputs: { ...inputs },
+    onlineInputs: { ...onlineInputs }
+  };
+  return display;
 }
 
 function calcPointPrice(marketValue, totalShares) {
@@ -910,9 +976,11 @@ function getForecastPathGrowth(forecastItems, fallbackGrowth, profile, reliabili
 
 function buildProfitPredictionSeries({ netProfit, expectedGrowth, forecastMeta, profile }) {
   const reliability = getForecastReliability(forecastMeta);
-  const forecastItems = (forecastMeta?.forecastItems || [])
-    .filter((item) => Number.isFinite(item.netProfit))
-    .slice(0, 3);
+  const forecastItems = forecastMeta?.manualOverride
+    ? []
+    : (forecastMeta?.forecastItems || [])
+      .filter((item) => Number.isFinite(item.netProfit))
+      .slice(0, 3);
   const pathGrowth = getForecastPathGrowth(forecastItems, expectedGrowth, profile, reliability);
   const predictions = [];
 
@@ -1194,7 +1262,7 @@ function calculateValuation({ quote, annualIncomeRows, latestBalance, forecastMe
 }
 
 function buildForecastDisplay(forecastMeta, profitPredictions) {
-  const values = forecastMeta.forecastItems?.length >= 3 ? forecastMeta.forecastItems.slice(0, 3) : profitPredictions.slice(0, 3).map((value, index) => ({ label: index === 0 ? 'N' : `N+${index}`, netProfit: value }));
+  const values = !forecastMeta.manualOverride && forecastMeta.forecastItems?.length >= 3 ? forecastMeta.forecastItems.slice(0, 3) : profitPredictions.slice(0, 3).map((value, index) => ({ label: index === 0 ? 'N' : `N+${index}`, netProfit: value }));
   const maxValue = Math.max(...values.map((item) => Math.abs(item.netProfit || 0)), 1);
   return values.map((item, index) => ({
     label: item.year ? `${item.year}E` : item.label || (index === 0 ? 'N' : `N+${index}`),
@@ -1360,11 +1428,68 @@ async function evaluateStock(keyword) {
   const display = buildDisplayResult({ quote, inputs, valuation, forecastMeta, notes });
   display.asOfTime = `最新取数：${new Date().toLocaleString('zh-CN', { hour12: false })}`;
   display.statusText = `已填充 ${quote.name}（${code}）。${notes.join('；')}`;
-  return display;
+  return attachValuationState(display, {
+    quote: { ...quote },
+    forecastMeta,
+    marketTrend,
+    context,
+    notes,
+    onlineInputs: inputs
+  }, inputs);
+}
+
+function getEditableInputs(result) {
+  return buildEditableInputs(result?._valuationState?.inputs || result?._valuationState?.onlineInputs || result?.inputs || {});
+}
+
+function getOnlineEditableInputs(result) {
+  return buildEditableInputs(result?._valuationState?.onlineInputs || result?._valuationState?.inputs || result?.inputs || {});
+}
+
+function recalculateWithInputs(result, manualInputs) {
+  const state = result?._valuationState;
+  if (!state) {
+    throw new Error('请先联网取数后再调整参数');
+  }
+
+  const baseInputs = state.onlineInputs || state.inputs || {};
+  const inputs = parseManualInputs(baseInputs, manualInputs);
+  const quote = state.quote || { name: result.stockName, code: result.stockCode };
+  const context = state.context || { industryText: '', annualMetrics: [], marketTrend: null };
+  const marketTrend = state.marketTrend || context.marketTrend || null;
+  const manualForecastMeta = createManualForecastMeta(state.forecastMeta || {});
+  const valuation = calculateValuation({
+    quote,
+    annualIncomeRows: [],
+    latestBalance: {},
+    forecastMeta: manualForecastMeta,
+    marketTrend,
+    inputs,
+    context
+  });
+  const notes = [
+    '已按手动调整参数重新计算；再次点击联网取数可恢复公开数据。',
+    ...(Array.isArray(state.notes) ? state.notes.filter((note) => !String(note).includes('已按手动调整参数')) : [])
+  ];
+  if (valuation.stability?.note && !notes.includes(valuation.stability.note)) notes.push(valuation.stability.note);
+  const display = buildDisplayResult({ quote, inputs, valuation, forecastMeta: manualForecastMeta, notes });
+  display.asOfTime = `手动重算：${new Date().toLocaleString('zh-CN', { hour12: false })}`;
+  display.statusText = `已按手动调整参数重新计算 ${quote.name || result.stockName || ''}（${quote.code || result.stockCode || ''}）。`;
+  display.manualAdjusted = true;
+  return attachValuationState(display, {
+    ...state,
+    notes,
+    inputs,
+    manualInputs,
+    onlineInputs: state.onlineInputs || baseInputs
+  }, inputs);
 }
 
 module.exports = {
   evaluateStock,
+  recalculateWithInputs,
+  getEditableInputs,
+  getOnlineEditableInputs,
   _test: {
     formatNumber,
     getIndustryProfile,
