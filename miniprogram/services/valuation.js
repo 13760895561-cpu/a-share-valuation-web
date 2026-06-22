@@ -168,6 +168,11 @@ function formatPointPrice(marketValue, totalShares) {
   return price === null ? '对应股价 -- 元/股' : `对应股价 ${formatNumber(price)} 元/股`;
 }
 
+function ratioToPercent(value) {
+  const number = toNumber(value);
+  return number === null ? null : number * 100;
+}
+
 function normalizeStockKeyword(value) {
   const trimmed = String(value || '').trim();
   const codeMatch = trimmed.match(/(?:sh|sz|bj)?\s*(\d{6})|(\d{6})\s*(?:\.|\s)*(?:sh|sz|bj)/i);
@@ -807,7 +812,61 @@ function calculateValuationEnvironment({ stockName, stockCode, industryText, mar
   const sellPremiumMultiplier = clamp(0.78 + environmentScore * 0.004, 0.86, 1.16) ?? 1;
   const environmentLabel = environmentScore >= 68 ? '环境偏积极' : environmentScore >= 55 ? '环境中性' : environmentScore >= 42 ? '环境偏谨慎' : '环境保守折扣';
   const summary = `${profile.label}，${profile.cycleLabel}；行业景气${getScoreLabel(industryCycleScore)}，需求供需${getScoreLabel(supplyDemandScore)}，市场趋势${marketTrend?.trendLabel || getScoreLabel(marketScore)}，估值环境系数${formatNumber(valuationMultiplier, 2)}。`;
-  return { profile, environmentScore, environmentLabel, industryCycleScore, demandScore, supplyDemandScore, marketScore, businessScore, valuationMultiplier, peMultipleFactor, cashFlowMultiplier, riskPremium, sellPremiumMultiplier, summary };
+  return { profile, environmentScore, environmentLabel, industryCycleScore, demandScore, supplyDemandScore, marketScore, businessScore, valuationMultiplier, peMultipleFactor, cashFlowMultiplier, riskPremium, sellPremiumMultiplier, summary, recentRevenueGrowth, recentProfitGrowth };
+}
+
+function classifyRevenueStage(annualMetrics = [], expectedGrowth, profile = {}) {
+  const latestAnnual = annualMetrics?.[0] || {};
+  const previousAnnual = annualMetrics?.[1] || {};
+  const baseIndex = annualMetrics?.length ? Math.min(3, annualMetrics.length - 1) : 0;
+  const baseAnnual = baseIndex > 0 ? annualMetrics[baseIndex] : null;
+  const recentRevenueGrowth = calculateGrowthRate(latestAnnual.revenue, previousAnnual.revenue);
+  const revenueCagr = baseAnnual ? calculateCagr(latestAnnual.revenue, baseAnnual.revenue, baseIndex) : null;
+  const blendedGrowth = average([recentRevenueGrowth, revenueCagr, Number.isFinite(expectedGrowth) ? expectedGrowth * 0.55 : null, profile.baseGrowth].filter((value) => Number.isFinite(value))) ?? 0;
+  const latestNetMargin = toNumber(latestAnnual.netMargin);
+  const previousNetMargin = toNumber(previousAnnual.netMargin);
+  const netMarginTrend = latestNetMargin !== null && previousNetMargin !== null ? latestNetMargin - previousNetMargin : null;
+
+  if (recentRevenueGrowth !== null && recentRevenueGrowth <= -5 && (revenueCagr ?? recentRevenueGrowth) <= 0) {
+    return { stage: 'decline', label: '营收衰退期', score: 10, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+  }
+  if (profile.stage === 'growth' && ((recentRevenueGrowth ?? 0) >= 20 || (revenueCagr ?? 0) >= 15 || (expectedGrowth ?? 0) >= 25)) {
+    return { stage: 'introduction', label: '导入高增期', score: 90, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+  }
+  if (blendedGrowth >= 12) return { stage: 'expansion', label: '扩张期', score: 74, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+  if (blendedGrowth >= 3) return { stage: 'steady-growth', label: '稳健成长期', score: 62, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+  if (blendedGrowth >= -3) return { stage: 'mature', label: '成熟平台期', score: 48, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+  return { stage: 'pressure', label: '营收承压期', score: 28, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+}
+
+function estimateReasonablePePolicy({ valuationEnvironment, annualMetrics, expectedGrowth }) {
+  const profile = valuationEnvironment?.profile || getIndustryProfile('');
+  const revenueStage = classifyRevenueStage(annualMetrics, expectedGrowth, profile);
+  const industryScore = valuationEnvironment?.industryCycleScore ?? 50;
+  const demandScore = valuationEnvironment?.supplyDemandScore ?? 50;
+  const marketScore = valuationEnvironment?.marketScore ?? 50;
+  const stageAdjustments = { introduction: 0.12, expansion: 0.07, 'steady-growth': 0.03, mature: -0.03, pressure: -0.1, decline: -0.16 };
+  let coefficient = 0.7 + (industryScore - 55) * 0.003 + (demandScore - 55) * 0.0018 + (marketScore - 50) * 0.0012 + (stageAdjustments[revenueStage.stage] ?? 0);
+
+  if (profile.stage === 'growth') coefficient += 0.03;
+  if (['financial', 'traditional', 'mature-consumption'].includes(profile.stage)) coefficient -= 0.03;
+  if ((expectedGrowth ?? 0) < 0) coefficient -= 0.04;
+  if ((expectedGrowth ?? 0) >= 20) coefficient += 0.03;
+
+  const hasRevenueDecline = (revenueStage.recentRevenueGrowth ?? revenueStage.blendedGrowth) < 0;
+  const forceLowCoefficient = industryScore <= 42 && hasRevenueDecline;
+  const forceHighCoefficient = industryScore >= 68 && revenueStage.stage === 'introduction';
+  if (forceLowCoefficient) coefficient = 0.5;
+  if (forceHighCoefficient) coefficient = 0.9;
+
+  coefficient = clamp(coefficient, 0.5, 0.9) ?? 0.7;
+  if (!forceHighCoefficient) {
+    const stageCaps = { expansion: 0.86, 'steady-growth': 0.82, mature: 0.76, pressure: 0.68, decline: 0.6 };
+    coefficient = Math.min(coefficient, stageCaps[revenueStage.stage] ?? 0.84);
+  }
+  const revenueStageLabel = forceLowCoefficient ? '低迷衰退迹象' : revenueStage.label;
+  const reason = `行业景气${getScoreLabel(industryScore)}，${revenueStageLabel}，合理PE系数${formatNumber(coefficient, 2)}`;
+  return { coefficient, revenueStage, revenueStageLabel, reason };
 }
 
 function combineSellValuesWithEnvironment({ intrinsicSellValue, peSellValue, surplusSellValue, adaptiveSellValue, valuationEnvironment }) {
@@ -1110,7 +1169,8 @@ function calculateValuation({ quote, annualIncomeRows, latestBalance, forecastMe
   const buyingCoefficient = debtAdjustment * (1 + dividendRate / 100) * (1 + grossMarginDiff);
   const intrinsicValue = tenYearTotalProfit * buyingCoefficient * valuationEnvironment.valuationMultiplier;
   const intrinsicSellValue = intrinsicValue * profitTaking;
-  const rawReasonablePE = (1 / (discountRate / 2)) * 0.8;
+  const reasonablePePolicy = estimateReasonablePePolicy({ valuationEnvironment, annualMetrics: context.annualMetrics || [], expectedGrowth });
+  const rawReasonablePE = (1 / (discountRate / 2)) * reasonablePePolicy.coefficient;
   const reasonablePE = clamp(rawReasonablePE * valuationEnvironment.peMultipleFactor, valuationEnvironment.profile.peMin ?? 8, valuationEnvironment.profile.peMax ?? 45) ?? rawReasonablePE;
   const peSellValue = reasonablePE * profitPredictions[2];
   const normalizedFcf = profitPredictions[2] + dAndA - capex;
@@ -1130,7 +1190,7 @@ function calculateValuation({ quote, annualIncomeRows, latestBalance, forecastMe
   const buyBaseValue = stability.buyBaseValue;
   const buyPoints = Array.from({ length: 5 }, (_, index) => buyBaseValue * Math.pow(0.9, index + 1));
   const finalBuyPoint = buyBaseValue * Math.pow(0.9, 9);
-  return { discountRate, buyingCoefficient, intrinsicValue, totalSurplusValue, reasonablePE, totalMarketCap, intrinsicSellValue, peSellValue, surplusSellValue, rawComprehensiveSellValue, comprehensiveSellValue, comprehensiveMarketStatus: getMarketStatus(comprehensiveSellValue, totalMarketCap), investmentBankValuation, adaptiveValuation, valuationEnvironment, predictionSeries, stability, profitPredictions, buyPoints, finalBuyPoint };
+  return { discountRate, buyingCoefficient, intrinsicValue, totalSurplusValue, reasonablePE, reasonablePePolicy, totalMarketCap, intrinsicSellValue, peSellValue, surplusSellValue, rawComprehensiveSellValue, comprehensiveSellValue, comprehensiveMarketStatus: getMarketStatus(comprehensiveSellValue, totalMarketCap), investmentBankValuation, adaptiveValuation, valuationEnvironment, predictionSeries, stability, profitPredictions, buyPoints, finalBuyPoint };
 }
 
 function buildForecastDisplay(forecastMeta, profitPredictions) {
@@ -1174,10 +1234,25 @@ function buildDisplayResult({ quote, inputs, valuation, forecastMeta, notes }) {
       stockPrice: formatNumber(inputs.stockPrice),
       dividendRate: formatNumber(inputs.dividendRate),
       totalShares: formatNumber(inputs.totalShares),
+      currentGrossMargin: formatNumber(inputs.currentGrossMargin),
+      previousGrossMargin: formatNumber(inputs.previousGrossMargin),
+      debtRatio: formatNumber(inputs.debtRatio),
+      dAndA: formatNumber(inputs.dAndA),
+      capex: formatNumber(inputs.capex),
+      perpetualGrowth: formatNumber(inputs.perpetualGrowth),
       expectedGrowth: formatNumber(inputs.expectedGrowth),
-      netProfit: formatNumber(inputs.netProfit)
+      netProfit: formatNumber(inputs.netProfit),
+      profitTaking: formatNumber(inputs.profitTaking, 3)
     },
     summary,
+    basic: {
+      discountRate: `${formatNumber(valuation.discountRate * 100)}%`,
+      buyingCoefficient: formatNumber(valuation.buyingCoefficient, 4),
+      totalSurplusValue: formatNumber(valuation.totalSurplusValue),
+      reasonablePE: formatNumber(valuation.reasonablePE),
+      reasonablePeCoefficient: formatNumber(valuation.reasonablePePolicy?.coefficient, 2),
+      revenueStage: valuation.reasonablePePolicy?.revenueStageLabel || '--'
+    },
     environment: {
       label: valuation.valuationEnvironment.environmentLabel,
       multiplier: formatNumber(valuation.valuationEnvironment.valuationMultiplier, 2),
@@ -1206,7 +1281,13 @@ function buildDisplayResult({ quote, inputs, valuation, forecastMeta, notes }) {
       buyPrice: formatPointPrice(valuation.investmentBankValuation.buyValue, totalShares),
       sellValue: formatNumber(valuation.investmentBankValuation.sellValue),
       sellPrice: formatPointPrice(valuation.investmentBankValuation.sellValue, totalShares),
-      targetPE: `${formatNumber(valuation.investmentBankValuation.targetPE)}x`
+      upside: `${formatNumber(valuation.investmentBankValuation.upside)}%`,
+      dcfValue: formatNumber(valuation.investmentBankValuation.dcfValue),
+      forwardPeValue: formatNumber(valuation.investmentBankValuation.forwardPeValue),
+      fcfYieldValue: formatNumber(valuation.investmentBankValuation.fcfYieldValue),
+      targetPE: `${formatNumber(valuation.investmentBankValuation.targetPE)}x`,
+      safetyMargin: `${formatNumber(ratioToPercent(valuation.investmentBankValuation.safetyMargin))}%`,
+      sellPremium: `${formatNumber(ratioToPercent(valuation.investmentBankValuation.sellPremium))}%`
     },
     adaptive: {
       badge: `${valuation.adaptiveValuation.methods.length}种方法`,

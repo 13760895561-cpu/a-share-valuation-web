@@ -250,6 +250,18 @@
   word-break: break-all;
 }
 
+.compact-grid {
+  margin-top: 14rpx;
+}
+
+.compact-grid > view {
+  min-height: 104rpx;
+}
+
+.compact-grid strong {
+  font-size: 30rpx;
+}
+
 .insight {
   margin-top: 18rpx;
   line-height: 1.6;

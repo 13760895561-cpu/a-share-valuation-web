@@ -948,6 +948,97 @@ function calculateValuationEnvironment({
   };
 }
 
+function classifyRevenueStage(annualMetrics = [], expectedGrowth, profile = {}) {
+  const latestAnnual = annualMetrics?.[0] || {};
+  const previousAnnual = annualMetrics?.[1] || {};
+  const baseIndex = annualMetrics?.length ? Math.min(3, annualMetrics.length - 1) : 0;
+  const baseAnnual = baseIndex > 0 ? annualMetrics[baseIndex] : null;
+  const recentRevenueGrowth = calculateGrowthRate(latestAnnual.revenue, previousAnnual.revenue);
+  const revenueCagr = baseAnnual ? calculateCagr(latestAnnual.revenue, baseAnnual.revenue, baseIndex) : null;
+  const blendedGrowth = average([
+    recentRevenueGrowth,
+    revenueCagr,
+    Number.isFinite(expectedGrowth) ? expectedGrowth * 0.55 : null,
+    profile.baseGrowth
+  ].filter((value) => Number.isFinite(value))) ?? 0;
+  const latestNetMargin = toNumber(latestAnnual.netMargin);
+  const previousNetMargin = toNumber(previousAnnual.netMargin);
+  const netMarginTrend = latestNetMargin !== null && previousNetMargin !== null ? latestNetMargin - previousNetMargin : null;
+
+  if (recentRevenueGrowth !== null && recentRevenueGrowth <= -5 && (revenueCagr ?? recentRevenueGrowth) <= 0) {
+    return { stage: 'decline', label: '营收衰退期', score: 10, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+  }
+  if (
+    profile.stage === 'growth'
+    && ((recentRevenueGrowth ?? 0) >= 20 || (revenueCagr ?? 0) >= 15 || (expectedGrowth ?? 0) >= 25)
+  ) {
+    return { stage: 'introduction', label: '导入高增期', score: 90, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+  }
+  if (blendedGrowth >= 12) {
+    return { stage: 'expansion', label: '扩张期', score: 74, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+  }
+  if (blendedGrowth >= 3) {
+    return { stage: 'steady-growth', label: '稳健成长期', score: 62, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+  }
+  if (blendedGrowth >= -3) {
+    return { stage: 'mature', label: '成熟平台期', score: 48, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+  }
+  return { stage: 'pressure', label: '营收承压期', score: 28, recentRevenueGrowth, revenueCagr, blendedGrowth, netMarginTrend };
+}
+
+function estimateReasonablePePolicy({ valuationEnvironment, annualMetrics, expectedGrowth }) {
+  const profile = valuationEnvironment?.profile || getIndustryProfile('');
+  const revenueStage = classifyRevenueStage(annualMetrics, expectedGrowth, profile);
+  const industryScore = valuationEnvironment?.industryCycleScore ?? 50;
+  const demandScore = valuationEnvironment?.supplyDemandScore ?? 50;
+  const marketScore = valuationEnvironment?.marketScore ?? 50;
+  const stageAdjustments = {
+    introduction: 0.12,
+    expansion: 0.07,
+    'steady-growth': 0.03,
+    mature: -0.03,
+    pressure: -0.1,
+    decline: -0.16
+  };
+
+  let coefficient = 0.7
+    + (industryScore - 55) * 0.003
+    + (demandScore - 55) * 0.0018
+    + (marketScore - 50) * 0.0012
+    + (stageAdjustments[revenueStage.stage] ?? 0);
+
+  if (profile.stage === 'growth') coefficient += 0.03;
+  if (['financial', 'traditional', 'mature-consumption'].includes(profile.stage)) coefficient -= 0.03;
+  if ((expectedGrowth ?? 0) < 0) coefficient -= 0.04;
+  if ((expectedGrowth ?? 0) >= 20) coefficient += 0.03;
+
+  const hasRevenueDecline = (revenueStage.recentRevenueGrowth ?? revenueStage.blendedGrowth) < 0;
+  const forceLowCoefficient = industryScore <= 42 && hasRevenueDecline;
+  const forceHighCoefficient = industryScore >= 68 && revenueStage.stage === 'introduction';
+  if (forceLowCoefficient) coefficient = 0.5;
+  if (forceHighCoefficient) coefficient = 0.9;
+
+  coefficient = clamp(coefficient, 0.5, 0.9) ?? 0.7;
+  if (!forceHighCoefficient) {
+    const stageCaps = {
+      expansion: 0.86,
+      'steady-growth': 0.82,
+      mature: 0.76,
+      pressure: 0.68,
+      decline: 0.6
+    };
+    coefficient = Math.min(coefficient, stageCaps[revenueStage.stage] ?? 0.84);
+  }
+  const revenueStageLabel = forceLowCoefficient ? '低迷衰退迹象' : revenueStage.label;
+  const reason = `行业景气${getScoreLabel(industryScore)}，${revenueStageLabel}，合理PE系数${formatNumber(coefficient, 2)}`;
+  return {
+    coefficient,
+    revenueStage,
+    revenueStageLabel,
+    reason
+  };
+}
+
 function getTerminalGrowthCap(profile) {
   if (profile?.stage === 'mature-consumption') return 0.015;
   if (profile?.stage === 'financial' || profile?.stage === 'traditional') return 0.012;
@@ -2642,7 +2733,12 @@ function calculateValuation() {
   const rawIntrinsicValue = tenYearTotalProfit * buyingCoefficient;
   const intrinsicValue = rawIntrinsicValue * valuationEnvironment.valuationMultiplier;
   const intrinsicSellValue = intrinsicValue * profitTaking;
-  const rawReasonablePE = (1 / (discountRate / 2)) * 0.8;
+  const reasonablePePolicy = estimateReasonablePePolicy({
+    valuationEnvironment,
+    annualMetrics: valuationContext?.annualMetrics || [],
+    expectedGrowth
+  });
+  const rawReasonablePE = (1 / (discountRate / 2)) * reasonablePePolicy.coefficient;
   const reasonablePE = clamp(
     rawReasonablePE * valuationEnvironment.peMultipleFactor,
     valuationEnvironment.profile.peMin ?? 8,
@@ -2720,6 +2816,8 @@ function calculateValuation() {
   setTextValue('intrinsic-value', intrinsicValue);
   setTextValue('total-surplus-value', totalSurplusValue);
   setTextValue('reasonable-pe', reasonablePE);
+  setTextValue('reasonable-pe-coefficient', reasonablePePolicy.coefficient, 2);
+  qs('revenue-stage').textContent = reasonablePePolicy.revenueStageLabel || '--';
   setTextValue('total-market-cap', totalMarketCap);
   setTextValue('intrinsic-sell-value', intrinsicSellValue);
   setTextValue('pe-sell-value', peSellValue);
@@ -2792,6 +2890,8 @@ function calculateValuation() {
       fcfBasedValuationUsable,
       rawIntrinsicValue,
       rawReasonablePE,
+      reasonablePePolicy,
+      reasonablePeCoefficient: reasonablePePolicy.coefficient,
       environmentAdjustedDiscountRate,
       terminalGrowthForValuation,
       intrinsicValue,
@@ -2941,6 +3041,8 @@ function showHistoryDetail(recordId) {
     ['贴现率', `${formatNumber(record.outputs.discountRate * 100)}%`],
     ['买入系数', formatNumber(record.outputs.buyingCoefficient, 4)],
     ['合理PE', formatNumber(record.outputs.reasonablePE)],
+    ['PE系数', formatNumber(record.outputs.reasonablePeCoefficient, 2)],
+    ['营收阶段', record.outputs.reasonablePePolicy?.revenueStageLabel || '未记录'],
     ['盈利预测来源', record.outputs.forecastMeta?.label || '未记录'],
     ['N+2自由现金流', `${formatNumber(record.outputs.normalizedFcf)} 亿元`],
     ['总体盈余口径', record.outputs.fcfBasedValuationUsable ? '已纳入综合卖点' : '自由现金流为负，未纳入综合卖点'],

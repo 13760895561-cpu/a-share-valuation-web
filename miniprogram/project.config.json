@@ -1,12 +1,13 @@
 {
   "description": "估值计算器小助手",
   "setting": {
-    "urlCheck": true,
+    "urlCheck": false,
     "es6": true,
     "enhance": true,
     "postcss": true,
     "minified": true,
-    "compileHotReLoad": true
+    "compileHotReLoad": true,
+    "minifyWXML": true
   },
   "compileType": "miniprogram",
   "libVersion": "3.7.10",

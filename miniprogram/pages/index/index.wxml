@@ -44,8 +44,20 @@
     </view>
 
     <view class="card">
+      <view class="card-title standalone">基础指标</view>
+      <view class="info-grid">
+        <view><text>贴现率</text><strong>{{result.basic.discountRate}}</strong></view>
+        <view><text>买入系数</text><strong>{{result.basic.buyingCoefficient}}</strong></view>
+        <view><text>总体盈余内在价值</text><strong>{{result.basic.totalSurplusValue}}</strong><small>亿元</small></view>
+        <view><text>合理PE</text><strong>{{result.basic.reasonablePE}}</strong></view>
+        <view><text>PE系数</text><strong>{{result.basic.reasonablePeCoefficient}}</strong></view>
+        <view><text>营收阶段</text><strong>{{result.basic.revenueStage}}</strong></view>
+      </view>
+    </view>
+
+    <view class="card">
       <view class="card-head">
-        <view class="card-title">基础参数</view>
+        <view class="card-title">输入参数</view>
         <button class="share-btn" open-type="share">分享给朋友</button>
       </view>
       <view class="info-grid">
@@ -53,8 +65,15 @@
         <view><text>股价</text><strong>{{result.inputs.stockPrice}} 元</strong></view>
         <view><text>股息率TTM</text><strong>{{result.inputs.dividendRate}}%</strong></view>
         <view><text>总股本</text><strong>{{result.inputs.totalShares}} 亿股</strong></view>
+        <view><text>最新毛利率</text><strong>{{result.inputs.currentGrossMargin}}%</strong></view>
+        <view><text>三年前毛利率</text><strong>{{result.inputs.previousGrossMargin}}%</strong></view>
+        <view><text>负债率</text><strong>{{result.inputs.debtRatio}}%</strong></view>
+        <view><text>预计D&A</text><strong>{{result.inputs.dAndA}} 亿元</strong></view>
+        <view><text>预计Capex</text><strong>{{result.inputs.capex}} 亿元</strong></view>
+        <view><text>永续增长率</text><strong>{{result.inputs.perpetualGrowth}}%</strong></view>
         <view><text>预期增速</text><strong>{{result.inputs.expectedGrowth}}%</strong></view>
         <view><text>N归母净利润</text><strong>{{result.inputs.netProfit}} 亿元</strong></view>
+        <view><text>止盈系数</text><strong>{{result.inputs.profitTaking}}倍</strong></view>
       </view>
     </view>
 
@@ -103,7 +122,15 @@
         <view><text>投行合理市值</text><strong>{{result.ib.fairValue}}</strong><small>{{result.ib.fairPrice}}</small></view>
         <view><text>投行买点市值</text><strong>{{result.ib.buyValue}}</strong><small>{{result.ib.buyPrice}}</small></view>
         <view><text>投行卖点市值</text><strong>{{result.ib.sellValue}}</strong><small>{{result.ib.sellPrice}}</small></view>
+        <view><text>相对现价空间</text><strong>{{result.ib.upside}}</strong><small>卖点 / 当前市值</small></view>
+      </view>
+      <view class="info-grid compact-grid">
+        <view><text>DCF/FCFF估值</text><strong>{{result.ib.dcfValue}}</strong></view>
+        <view><text>远期PE估值</text><strong>{{result.ib.forwardPeValue}}</strong></view>
+        <view><text>FCF收益率估值</text><strong>{{result.ib.fcfYieldValue}}</strong></view>
         <view><text>投行目标PE</text><strong>{{result.ib.targetPE}}</strong></view>
+        <view><text>安全边际</text><strong>{{result.ib.safetyMargin}}</strong></view>
+        <view><text>卖点溢价</text><strong>{{result.ib.sellPremium}}</strong></view>
       </view>
     </view>
 
