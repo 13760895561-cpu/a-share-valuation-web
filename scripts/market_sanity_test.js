@@ -28,7 +28,11 @@ function parseArgs() {
   });
   return {
     deep: Number(args.get('--deep') || 0),
-    workers: Number(args.get('--workers') || 5)
+    workers: Number(args.get('--workers') || 5),
+    forecastAudit: args.has('--forecast-audit'),
+    forecastLimit: args.get('--forecast-limit') === 'all'
+      ? Infinity
+      : Number(args.get('--forecast-limit') || 0)
   };
 }
 
@@ -252,11 +256,76 @@ async function runDeepSample(stocks, limit, workers) {
   return { tested: sample.length, success, failures };
 }
 
+function classifyForecastResult(result) {
+  const label = result?.forecast?.label || '';
+  const detail = result?.forecast?.detail || '';
+  const source = result?._valuationState?.forecastMeta?.source || '';
+  const institutionCount = result?._valuationState?.forecastMeta?.institutionCount ?? 0;
+  if (/券商|同花顺|东方财富|研报|一致预测/.test(`${label}${detail}`) || source === 'broker') {
+    return { type: 'broker', label, detail, source, institutionCount };
+  }
+  if (/投行|历史/.test(label)) return { type: 'fallback', label, detail, source, institutionCount };
+  return { type: 'unknown', label, detail, source, institutionCount };
+}
+
+async function runForecastAudit(stocks, limit, workers) {
+  if (!limit) return { tested: 0, broker: 0, fallback: 0, unknown: 0, failures: [] };
+  createWxRequestShim();
+  const sample = Number.isFinite(limit) ? stocks.slice(0, limit) : stocks;
+  let cursor = 0;
+  const failures = [];
+  const sourceCounts = {};
+  let broker = 0;
+  let fallback = 0;
+  let unknown = 0;
+
+  async function worker() {
+    while (cursor < sample.length) {
+      const stock = sample[cursor];
+      cursor += 1;
+      try {
+        const result = await valuationService.evaluateStock(stock.code);
+        const sell = parseFormattedNumber(result.summary?.comprehensiveSellValue);
+        const marketCap = parseFormattedNumber(result.summary?.totalMarketCap);
+        const buy1 = parseFormattedNumber(result.buyPoints?.[0]?.value);
+        const finalBuy = parseFormattedNumber(result.buyPoints?.[result.buyPoints.length - 1]?.value);
+        if (!sell || !marketCap || !buy1 || !finalBuy || sell <= 0 || buy1 <= 0 || finalBuy <= 0 || buy1 >= sell || finalBuy >= buy1 || sell / marketCap > 8 || sell / marketCap < 0.08) {
+          failures.push({ code: stock.code, name: stock.name, reason: 'range', sell, marketCap, buy1, finalBuy });
+          continue;
+        }
+        const classification = classifyForecastResult(result);
+        sourceCounts[classification.source || classification.label || 'unknown'] = (sourceCounts[classification.source || classification.label || 'unknown'] || 0) + 1;
+        if (classification.type === 'broker') broker += 1;
+        else if (classification.type === 'fallback') fallback += 1;
+        else {
+          unknown += 1;
+          failures.push({ code: stock.code, name: stock.name, reason: 'unknown-forecast', ...classification });
+        }
+      } catch (error) {
+        failures.push({ code: stock.code, name: stock.name, reason: error.message || String(error) });
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: workers }, worker));
+  return {
+    tested: sample.length,
+    broker,
+    fallback,
+    unknown,
+    sourceCounts,
+    failures
+  };
+}
+
 async function main() {
   const options = parseArgs();
   const stocks = await fetchAllStocks();
   const quoteFailures = runQuoteLevelStress(stocks);
   const deep = await runDeepSample(stocks, options.deep, options.workers);
+  const forecastAudit = options.forecastAudit
+    ? await runForecastAudit(stocks, options.forecastLimit, options.workers)
+    : { tested: 0, broker: 0, fallback: 0, unknown: 0, failures: [], sourceCounts: {} };
   const result = {
     allStockCount: stocks.length,
     quoteStressCases: stocks.length * 3,
@@ -267,10 +336,18 @@ async function main() {
       success: deep.success,
       failures: deep.failures.length,
       failureSample: deep.failures.slice(0, 10)
+    },
+    forecastAudit: {
+      tested: forecastAudit.tested,
+      broker: forecastAudit.broker,
+      fallback: forecastAudit.fallback,
+      unknown: forecastAudit.unknown,
+      sourceCounts: forecastAudit.sourceCounts,
+      failureSample: forecastAudit.failures.slice(0, 10)
     }
   };
   console.log(JSON.stringify(result, null, 2));
-  if (quoteFailures.length || deep.failures.length) process.exitCode = 1;
+  if (quoteFailures.length || deep.failures.length || forecastAudit.failures.length) process.exitCode = 1;
 }
 
 main().catch((error) => {

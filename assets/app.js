@@ -1879,9 +1879,49 @@ function extractTonghuashunReportForecast(html, totalShares) {
   return null;
 }
 
+function extractTonghuashunAsciiReportForecast(html, totalShares) {
+  const text = String(html || '');
+  const yearPattern = /(20\d{2})\s*\/\s*(20\d{2})\s*\/\s*(20\d{2})/g;
+  let yearMatch;
+  while ((yearMatch = yearPattern.exec(text))) {
+    const sectionStart = Math.max(0, yearMatch.index - 600);
+    const sectionEnd = Math.min(text.length, yearMatch.index + 1200);
+    const section = text.slice(sectionStart, sectionEnd);
+    if (!/profit-forecast|forecast|y[l1]yc|worth|report|研报|盈利|预测/i.test(section)) continue;
+
+    const afterYears = text.slice(yearMatch.index + yearMatch[0].length, sectionEnd);
+    const numberTriplets = [...afterYears.matchAll(/(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)/g)]
+      .filter((match) => !/^20\d{2}$/.test(match[1]));
+    if (!numberTriplets.length) continue;
+
+    const selectedMatch = numberTriplets.length >= 2 ? numberTriplets[1] : numberTriplets[0];
+    const years = yearMatch.slice(1, 4).map(Number);
+    const profits = selectedMatch.slice(1, 4).map(Number);
+    if (years.some((year) => !Number.isFinite(year)) || profits.some((profit) => !Number.isFinite(profit))) continue;
+
+    const unitText = afterYears.slice(selectedMatch.index + selectedMatch[0].length, selectedMatch.index + selectedMatch[0].length + 24);
+    const unitMultiplier = unitText.includes('万') && !unitText.includes('亿') ? 1 / 10000 : unitText.includes('万亿') ? 10000 : 1;
+    const countMatches = [...text.matchAll(/profit-forecast-tab-count-\d+">\s*(\d+)/g)]
+      .map((match) => Number(match[1]))
+      .filter((value) => Number.isFinite(value));
+    const institutionCount = Math.max(sum(countMatches), 1);
+    return {
+      forecastItems: years.map((year, index) => ({
+        year,
+        netProfit: profits[index] * unitMultiplier,
+        eps: totalShares ? (profits[index] * unitMultiplier) / totalShares : null
+      })),
+      institutionCount,
+      detail: `同花顺研报预测${institutionCount}篇（结构化数字解析）`
+    };
+  }
+  return null;
+}
+
 async function fetchTonghuashunResearchProfitForecast(code, totalShares, latestAnnualProfit) {
   const html = await fetchText(`https://basic.10jqka.com.cn/${code}/worth.html`, {}, 15000, 1, 'gb18030');
-  const parsed = extractTonghuashunReportForecast(html, totalShares);
+  const parsed = extractTonghuashunReportForecast(html, totalShares)
+    || extractTonghuashunAsciiReportForecast(html, totalShares);
   if (!parsed) return null;
 
   return buildProfitForecastResult({
